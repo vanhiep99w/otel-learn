@@ -1,15 +1,459 @@
 ---
-title: "Go"
-description: "SDK Go, context.Context và instrumentation cho service Go."
+title: "OpenTelemetry cho Go"
+description: "Instrument một HTTP service Go bằng SDK, otelhttp, OTLP, context propagation, kiểm thử và graceful shutdown."
 ---
 
-Trang này là **placeholder** cho chủ đề **Go**. Nội dung hướng dẫn, ví dụ và kiểm chứng sẽ được bổ sung sau.
+<Callout type="info" title="Kết quả sau bài này">
+  Bạn sẽ xây một service `net/http` gần như chạy được, tạo HTTP và business spans,
+  xuất OTLP/gRPC tới Collector, truyền `context.Context`, thêm metric tối thiểu và
+  kiểm thử không cần backend. Các lệnh cài đặt không ghim version; production phải
+  commit `go.mod` và `go.sum` sau khi chọn release tương thích.
+</Callout>
 
-## Phạm vi dự kiến
+## Mục lục
 
-SDK Go, context.Context và instrumentation cho service Go.
+- [Chọn auto-instrumentation hay thư viện](#chọn-auto-instrumentation-hay-thư-viện)
+- [Kiến trúc ví dụ](#kiến-trúc-ví-dụ)
+- [Chuẩn bị Collector](#chuẩn-bị-collector)
+- [Tạo module và cài dependency](#tạo-module-và-cài-dependency)
+- [Khởi tạo resource provider và OTLP exporter](#khởi-tạo-resource-provider-và-otlp-exporter)
+- [HTTP service với otelhttp](#http-service-với-otelhttp)
+  - [Context propagation](#context-propagation)
+  - [Ghi lỗi và status](#ghi-lỗi-và-status)
+- [Metrics và logs trong Go](#metrics-và-logs-trong-go)
+- [Chạy và xác minh](#chạy-và-xác-minh)
+- [Graceful shutdown và flush](#graceful-shutdown-và-flush)
+- [Kiểm thử instrumentation](#kiểm-thử-instrumentation)
+- [Framework instrumentation](#framework-instrumentation)
+- [Troubleshooting](#troubleshooting)
+- [Thực hành production](#thực-hành-production)
+- [Nguồn chính thức và bước tiếp theo](#nguồn-chính-thức-và-bước-tiếp-theo)
 
-- Mental model và thuật ngữ cần biết.
-- Cấu hình hoặc ví dụ thực hành phù hợp.
-- Cách xác minh kết quả.
-- Failure modes, giới hạn và best practices.
+## Chọn auto-instrumentation hay thư viện
+
+Go không có một official general-purpose in-process agent tương đương Java agent
+có thể biến đổi mọi binary Go đã build. Đường ổn định và idiomatic là link
+OpenTelemetry API/SDK cùng instrumentation library vào binary, ví dụ `otelhttp`
+cho `net/http`, rồi thêm manual spans cho nghiệp vụ.
+
+Upstream có các hướng zero-code/automatic instrumentation cho Go, gồm quan sát
+dựa trên eBPF và tích hợp Operator. Phạm vi framework, kernel, privilege,
+propagation và mức ổn định có thể khác nhau theo release. Hãy xem chúng là một
+capability cần compatibility test, không phải drop-in replacement cho library
+instrumentation. Kiểm tra trạng thái hiện tại tại
+[Go zero-code](https://opentelemetry.io/docs/zero-code/go/) trước khi chọn.
+
+| Trường hợp | Chọn |
+| --- | --- |
+| Sở hữu source, cần propagation chính xác | SDK + instrumentation library |
+| Cần business span/metric | Manual API trong `context.Context` |
+| Không thể rebuild binary, Linux phù hợp | Đánh giá eBPF/Operator; xác minh giới hạn |
+| Viết library dùng lại | Chỉ phụ thuộc OTel API, không sở hữu global SDK |
+
+## Kiến trúc ví dụ
+
+```text
+curl ──HTTP + traceparent──► otelhttp handler ──► checkout.reserve span
+                                  │
+                                  ▼
+                         BatchSpanProcessor
+                                  │ OTLP/gRPC :4317
+                                  ▼
+                              Collector ──► debug exporter
+```
+
+`otelhttp` là instrumentation library: nó tạo server span và extract context ở
+HTTP boundary. `TracerProvider` là SDK component tạo tracer và xử lý spans.
+`BatchSpanProcessor` gom spans trước khi exporter gửi qua OTLP.
+
+## Chuẩn bị Collector
+
+```yaml title="otelcol.yaml"
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+processors:
+  batch: {}
+exporters:
+  debug:
+    verbosity: detailed
+service:
+  pipelines:
+    traces: { receivers: [otlp], processors: [batch], exporters: [debug] }
+    metrics: { receivers: [otlp], processors: [batch], exporters: [debug] }
+    logs: { receivers: [otlp], processors: [batch], exporters: [debug] }
+```
+
+```bash
+docker run --rm --name otelcol \
+  -p 127.0.0.1:4317:4317 -p 127.0.0.1:4318:4318 \
+  -v "$PWD/otelcol.yaml:/etc/otelcol-contrib/config.yaml:ro" \
+  otel/opentelemetry-collector-contrib:latest
+```
+
+Pin image trong production. `debug` exporter chỉ phục vụ lab, không có retention
+hay query.
+
+## Tạo module và cài dependency
+
+Ví dụ dùng OTLP/gRPC, SDK trace và `otelhttp`:
+
+```bash
+mkdir checkout-go && cd checkout-go
+go mod init example.com/checkout-go
+go get go.opentelemetry.io/otel \
+  go.opentelemetry.io/otel/sdk \
+  go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc \
+  go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp
+go mod tidy
+```
+
+Các module OpenTelemetry core và contrib có release cadence khác nhau. Commit
+`go.mod`/`go.sum`, chạy test sau mỗi upgrade và tránh ép các major version không
+tương thích.
+
+## Khởi tạo resource provider và OTLP exporter
+
+Tạo một file duy nhất sau:
+
+```go title="main.go"
+package main
+
+import (
+  "context"
+  "errors"
+  "fmt"
+  "log"
+  "net/http"
+  "os"
+  "os/signal"
+  "syscall"
+  "time"
+
+  "go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
+  "go.opentelemetry.io/otel"
+  "go.opentelemetry.io/otel/attribute"
+  "go.opentelemetry.io/otel/codes"
+  "go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
+  "go.opentelemetry.io/otel/propagation"
+  "go.opentelemetry.io/otel/sdk/resource"
+  sdktrace "go.opentelemetry.io/otel/sdk/trace"
+  "go.opentelemetry.io/otel/trace"
+)
+
+func newTracerProvider(ctx context.Context) (*sdktrace.TracerProvider, error) {
+  exporter, err := otlptracegrpc.New(ctx,
+    otlptracegrpc.WithEndpoint("localhost:4317"),
+    otlptracegrpc.WithInsecure(), // chỉ local; production dùng TLS
+  )
+  if err != nil {
+    return nil, fmt.Errorf("create OTLP trace exporter: %w", err)
+  }
+
+  res, err := resource.New(ctx,
+    resource.WithFromEnv(),
+    resource.WithTelemetrySDK(),
+    resource.WithHost(),
+    resource.WithAttributes(
+      attribute.String("service.name", "checkout-go"),
+      attribute.String("deployment.environment.name", "local"),
+    ),
+  )
+  if err != nil {
+    return nil, fmt.Errorf("create resource: %w", err)
+  }
+
+  return sdktrace.NewTracerProvider(
+    sdktrace.WithResource(res),
+    sdktrace.WithBatcher(exporter),
+    sdktrace.WithSampler(sdktrace.ParentBased(sdktrace.AlwaysSample())),
+  ), nil
+}
+
+func checkoutHandler(tracer trace.Tracer) http.HandlerFunc {
+  return func(w http.ResponseWriter, r *http.Request) {
+    ctx, span := tracer.Start(r.Context(), "checkout.reserve")
+    defer span.End()
+
+    if err := reserve(ctx, r.URL.Query().Get("fail") == "true"); err != nil {
+      span.RecordError(err)
+      span.SetStatus(codes.Error, "inventory reservation failed")
+      http.Error(w, "reservation failed", http.StatusConflict)
+      return
+    }
+
+    span.SetAttributes(attribute.String("app.checkout.result", "accepted"))
+    w.WriteHeader(http.StatusAccepted)
+    _, _ = w.Write([]byte("accepted\n"))
+  }
+}
+
+func reserve(ctx context.Context, fail bool) error {
+  if err := ctx.Err(); err != nil {
+    return err
+  }
+  if fail {
+    return errors.New("inventory unavailable")
+  }
+  return nil
+}
+
+func run() error {
+  root, stop := signal.NotifyContext(context.Background(),
+    os.Interrupt, syscall.SIGTERM)
+  defer stop()
+
+  tp, err := newTracerProvider(root)
+  if err != nil { return err }
+  otel.SetTracerProvider(tp)
+  otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(
+    propagation.TraceContext{}, propagation.Baggage{},
+  ))
+
+  tracer := otel.Tracer("example.com/checkout-go")
+  mux := http.NewServeMux()
+  mux.Handle("/checkout", otelhttp.NewHandler(
+    checkoutHandler(tracer), "POST /checkout"))
+  server := &http.Server{
+    Addr: ":8080", Handler: mux,
+    ReadHeaderTimeout: 5 * time.Second,
+  }
+
+  serverErr := make(chan error, 1)
+  go func() {
+    log.Println("listening on :8080")
+    serverErr <- server.ListenAndServe()
+  }()
+
+  select {
+  case <-root.Done():
+  case err := <-serverErr:
+    if err != nil && !errors.Is(err, http.ErrServerClosed) { return err }
+  }
+
+  shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+  defer cancel()
+  if err := server.Shutdown(shutdownCtx); err != nil {
+    log.Printf("HTTP shutdown: %v", err)
+  }
+  if err := tp.Shutdown(shutdownCtx); err != nil {
+    return fmt.Errorf("tracer provider shutdown: %w", err)
+  }
+  return nil
+}
+
+func main() {
+  if err := run(); err != nil { log.Fatal(err) }
+}
+```
+
+Ví dụ dùng key semantic convention chuẩn `service.name` trực tiếp để không khóa
+bài viết vào import path `semconv/vX.Y.Z`. Trong code production, bạn có thể dùng
+package `semconv` đi cùng phiên bản module đã chọn. `resource.New` cùng
+`WithAttributes` là API hiện hành; tránh các helper resource cũ đã bị deprecate
+trong tutorial trước đây.
+
+`WithInsecure()` chỉ hợp lệ khi Collector local không bật TLS. Production nên
+cấu hình certificate, endpoint và headers từ environment/secret thay vì hard-code.
+Exporter cũng hỗ trợ option/env tương ứng; chọn một nguồn cấu hình rõ ràng.
+
+## HTTP service với otelhttp
+
+`otelhttp.NewHandler` tạo server span, extract remote context và đặt span vào
+`r.Context()`. Handler lấy chính context đó để tạo `checkout.reserve`, nên span
+nghiệp vụ trở thành child của HTTP span.
+
+### Context propagation
+
+`context.Context` mang deadline, cancellation và OpenTelemetry span context qua
+call chain. Quy tắc Go quan trọng:
+
+- đặt `ctx` làm tham số đầu tiên và truyền `r.Context()` xuống mọi lời gọi;
+- không cất request context trong struct sống lâu;
+- không thay bằng `context.Background()` ở giữa request;
+- khi tạo goroutine có vòng đời dài hơn request, quyết định rõ cancellation và
+  dùng span link nếu operation không còn là child trực tiếp.
+
+Với outbound HTTP, wrap transport hoặc client:
+
+```go
+client := &http.Client{Transport: otelhttp.NewTransport(http.DefaultTransport)}
+req, _ := http.NewRequestWithContext(ctx, http.MethodGet, downstreamURL, nil)
+resp, err := client.Do(req)
+```
+
+Transport inject `traceparent` bằng global propagator. Không tự nối header bằng
+string. Với queue/protocol custom, gọi `otel.GetTextMapPropagator().Inject` ở
+producer và `Extract` ở consumer bằng carrier phù hợp.
+
+### Ghi lỗi và status
+
+`span.RecordError(err)` thêm exception event; nó **không tự đặt** span status thành
+error. Vì vậy ví dụ gọi cả `RecordError` và `SetStatus(codes.Error, ...)`.
+Không đặt status error chỉ vì HTTP client nhận một status mà semantic conventions
+coi là kết quả hợp lệ; framework instrumentation xử lý HTTP theo convention.
+
+Đừng ghi raw error message vào metric label. Trong span, chỉ ghi thông tin cần
+điều tra và không chứa secret/PII. Cancellation từ context cần được trả lên để
+handler dừng work thay vì tiếp tục tạo telemetry sau khi client rời đi.
+
+## Metrics và logs trong Go
+
+OpenTelemetry Go traces và metrics là stable. Để thêm metrics, cài OTLP metric
+exporter, tạo `sdkmetric.MeterProvider` với `PeriodicReader`, rồi đặt global meter
+provider. Instrument được tạo một lần:
+
+```go
+meter := otel.Meter("example.com/checkout-go")
+accepted, err := meter.Int64Counter("checkout.accepted",
+  metric.WithUnit("{order}"))
+if err != nil { return err }
+accepted.Add(ctx, 1, metric.WithAttributes(
+  attribute.String("result", "accepted")))
+```
+
+Metric attributes phải có cardinality thấp. `result=accepted|rejected` phù hợp;
+order ID hoặc URL thô không phù hợp. Meter provider cũng phải `Shutdown` trong
+cùng timeout và sau khi ngừng nhận traffic.
+
+OpenTelemetry Go logs vẫn cần đánh giá theo release và ecosystem bridge đang dùng;
+maturity của log API/SDK/bridge không nên suy ra từ traces/metrics. Kiểm tra
+[Go status](https://opentelemetry.io/docs/languages/go/) và repository release.
+Trong khi bridge chưa đáp ứng use case, dùng structured logs và lấy IDs để
+correlate khi span hợp lệ:
+
+```go
+sc := trace.SpanContextFromContext(ctx)
+log.Printf("trace_id=%s span_id=%s event=checkout_accepted",
+  sc.TraceID(), sc.SpanID())
+```
+
+Đây là log correlation, không phải OTLP logs pipeline. Muốn export logs, chọn
+bridge/provider được tài liệu chính thức của release hỗ trợ và test pipeline
+`logs` độc lập.
+
+## Chạy và xác minh
+
+```bash
+go run .
+curl -i -X POST http://localhost:8080/checkout
+curl -i -X POST 'http://localhost:8080/checkout?fail=true'
+```
+
+Trong Collector log, kiểm tra:
+
+- resource có `service.name=checkout-go`;
+- server span và `checkout.reserve` dùng cùng trace ID;
+- business span có parent span ID của server span;
+- request lỗi có exception event và status `Error`;
+- dừng bằng `Ctrl+C` vẫn export các span cuối.
+
+Để kiểm tra remote propagation, gửi header hợp lệ từ service instrumented khác,
+hoặc gọi service B qua `otelhttp.NewTransport`. Hai service phải có cùng trace ID.
+Chỉ thấy dữ liệu trong Collector chưa chứng minh context được truyền đúng.
+
+## Graceful shutdown và flush
+
+Thứ tự trong ví dụ là: nhận `SIGTERM`, `server.Shutdown` để drain request, rồi
+`TracerProvider.Shutdown` để flush batch và đóng exporter. Dùng
+`context.Background()` có timeout cho shutdown vì request/root context đã bị
+cancel. Nếu dùng chính context đã cancel, flush có thể kết thúc ngay.
+
+`Shutdown` là best effort và cần được gọi đúng một lần. `SIGKILL`, OOM hoặc timeout
+quá ngắn vẫn có thể làm mất queue trong memory. Trong Kubernetes, đặt
+`terminationGracePeriodSeconds` dài hơn HTTP drain cộng telemetry flush và theo
+dõi export errors/dropped spans.
+
+## Kiểm thử instrumentation
+
+Dùng `tracetest.SpanRecorder` để test span trong memory, không mở network:
+
+```go
+func TestCheckoutSpan(t *testing.T) {
+  recorder := tracetest.NewSpanRecorder()
+  tp := sdktrace.NewTracerProvider()
+  tp.RegisterSpanProcessor(recorder)
+  t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+
+  tracer := tp.Tracer("test")
+  handler := checkoutHandler(tracer)
+  req := httptest.NewRequest(http.MethodPost, "/checkout", nil)
+  rr := httptest.NewRecorder()
+  handler.ServeHTTP(rr, req)
+
+  if rr.Code != http.StatusAccepted { t.Fatalf("status=%d", rr.Code) }
+  spans := recorder.Ended()
+  if len(spans) != 1 || spans[0].Name() != "checkout.reserve" {
+    t.Fatalf("unexpected spans: %#v", spans)
+  }
+}
+```
+
+Test thêm error status, attributes allowlist và parent bằng cách tạo một parent
+span trong request context. Integration test nên chạy Collector container để
+xác minh OTLP endpoint, TLS và resource. Luôn chạy `go test -race ./...`; context
+hoặc instrumentation không làm business state trở nên thread-safe.
+
+## Framework instrumentation
+
+`otelhttp` dành cho `net/http`. Với Gin, Echo, gRPC, database driver hoặc message
+client, tìm instrumentation trong
+[OpenTelemetry Registry](https://opentelemetry.io/ecosystem/registry/?component=instrumentation&language=go)
+và repository `opentelemetry-go-contrib`.
+
+Đọc compatibility của đúng package/framework version. Middleware phải được đặt
+ở boundary ngoài đủ sớm để extract context trước khi handler tạo spans. Không
+bọc cùng HTTP boundary bằng hai middleware; duplicate server spans làm sai latency
+và sampling. Nếu framework chưa có instrumentation ổn định, instrument boundary
+thủ công bằng API thay vì copy một package abandoned.
+
+## Troubleshooting
+
+| Triệu chứng | Nguyên nhân thường gặp và xử lý |
+| --- | --- |
+| `connection refused` | Collector chưa chạy, nhầm `4317`/`4318`, hoặc `localhost` trỏ vào container khác |
+| `transport: authentication handshake failed` | Client plaintext gọi receiver TLS hoặc ngược lại; bỏ `WithInsecure` và cấu hình credentials đúng |
+| Có business span nhưng không có HTTP span | Handler chưa được wrap bằng `otelhttp.NewHandler` |
+| Mọi span là root | Đã bỏ `r.Context()`, tạo goroutine bằng `Background`, hoặc propagator chưa được đặt |
+| Không thấy span ngay | Batch exporter chưa đến chu kỳ; gửi request rồi graceful shutdown, không dùng `os.Exit` trước defer |
+| Request thành công nhưng process treo | Goroutine/server chưa drain hoặc shutdown không có timeout; kiểm tra goroutine dump |
+| Attribute explosion | ID/URL/error message được dùng làm metric label hoặc span name; thay bằng route/kết quả hữu hạn |
+| Collector nhận traces nhưng không metrics/logs | Mỗi signal cần provider, exporter và Collector pipeline riêng |
+
+Exporter có internal errors nhưng telemetry không được phép làm business request
+thất bại. Đồng thời, đừng nuốt diagnostic hoàn toàn: đưa SDK/exporter errors vào
+logging/monitoring có rate limit để SRE biết pipeline đang mù.
+
+## Thực hành production
+
+- Khóa module versions và test core/contrib cùng nhau; chạy race test và benchmark.
+- Dùng Collector gần workload, TLS và secret-managed headers. Không gửi thẳng
+  mỗi service tới public backend nếu không có lý do vận hành rõ ràng.
+- Chọn parent-based sampler theo traffic và ngân sách. `AlwaysSample` trong ví dụ
+  chỉ phù hợp local; sampling không giảm chi phí metrics/logs.
+- Đặt span name theo route hoặc operation ổn định. Giới hạn attributes/events và
+  tuyệt đối tránh token, payload, user ID không được phép.
+- Cấu hình HTTP timeouts, exporter timeout và queue. Theo dõi latency overhead,
+  dropped spans, export failures và Collector backpressure.
+- Sở hữu một global provider ở application root. Library chỉ lấy tracer/meter và
+  vẫn hoạt động với no-op provider.
+- Rollout canary, so sánh CPU/memory/p99 và có kill switch cho middleware hoặc
+  exporter. Với eBPF/Operator, kiểm tra kernel, capability và propagation riêng.
+
+## Nguồn chính thức và bước tiếp theo
+
+Đối chiếu API và stability ở
+[OpenTelemetry Go documentation](https://opentelemetry.io/docs/languages/go/),
+[`opentelemetry-go`](https://github.com/open-telemetry/opentelemetry-go),
+[`opentelemetry-go-contrib`](https://github.com/open-telemetry/opentelemetry-go-contrib)
+và [OTLP exporter docs](https://opentelemetry.io/docs/languages/go/exporters/).
+
+<Cards>
+  <Card title="Manual instrumentation" href="/instrumentation/manual-instrumentation/" description="Thiết kế spans, metrics và propagation." />
+  <Card title="Propagators" href="/instrumentation/propagators/" description="Giữ context qua HTTP, RPC và messaging." />
+  <Card title="Collector" href="/collector/" description="Nhận, xử lý và xuất OTLP." />
+</Cards>
