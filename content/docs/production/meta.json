@@ -1,0 +1,15 @@
+{
+  "title": "Production",
+  "pages": [
+    "index",
+    "production-readiness",
+    "performance",
+    "cardinality",
+    "reliability",
+    "security",
+    "cost-control",
+    "scaling",
+    "upgrades",
+    "governance"
+  ]
+}

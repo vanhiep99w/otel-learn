@@ -1,0 +1,14 @@
+{
+  "title": "Troubleshooting",
+  "pages": [
+    "index",
+    "triage",
+    "no-data",
+    "missing-spans",
+    "collector-errors",
+    "export-failures",
+    "duplicate-telemetry",
+    "high-memory",
+    "context-loss"
+  ]
+}

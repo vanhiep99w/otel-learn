@@ -1,0 +1,13 @@
+{
+  "title": "Labs",
+  "pages": [
+    "index",
+    "minimal-service",
+    "collector-pipeline",
+    "distributed-trace",
+    "metrics-dashboard",
+    "logs-traces",
+    "kubernetes-stack",
+    "failure-injection"
+  ]
+}

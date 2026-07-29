@@ -1,0 +1,16 @@
+{
+  "pages": [
+    "fundamentals",
+    "getting-started",
+    "signals",
+    "instrumentation",
+    "languages",
+    "collector",
+    "protocols-backends",
+    "deployment",
+    "production",
+    "troubleshooting",
+    "labs",
+    "reference"
+  ]
+}

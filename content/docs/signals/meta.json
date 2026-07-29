@@ -1,0 +1,13 @@
+{
+  "title": "Telemetry signals",
+  "pages": [
+    "index",
+    "traces",
+    "spans",
+    "sampling",
+    "metrics",
+    "logs",
+    "exemplars",
+    "correlation"
+  ]
+}

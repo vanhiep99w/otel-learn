@@ -1,0 +1,14 @@
+{
+  "title": "Instrumentation",
+  "pages": [
+    "index",
+    "api-sdk",
+    "auto-instrumentation",
+    "manual-instrumentation",
+    "resources",
+    "configuration",
+    "propagators",
+    "instrumentation-libraries",
+    "testing-instrumentation"
+  ]
+}

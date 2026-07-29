@@ -1,0 +1,13 @@
+{
+  "title": "Nền tảng",
+  "pages": [
+    "index",
+    "what-is-observability",
+    "what-is-opentelemetry",
+    "signals-overview",
+    "telemetry-pipeline",
+    "context-propagation",
+    "semantic-conventions",
+    "architecture"
+  ]
+}

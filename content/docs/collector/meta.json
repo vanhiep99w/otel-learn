@@ -1,0 +1,15 @@
+{
+  "title": "OpenTelemetry Collector",
+  "pages": [
+    "index",
+    "overview",
+    "configuration",
+    "receivers",
+    "processors",
+    "exporters",
+    "connectors",
+    "extensions",
+    "pipelines",
+    "collector-distributions"
+  ]
+}
