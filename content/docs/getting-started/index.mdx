@@ -1,19 +1,122 @@
 ---
 title: "Bắt đầu"
-description: "Chuẩn bị môi trường và chạy ví dụ OpenTelemetry đầu tiên."
+description: "Làm quen với OpenTelemetry, chuẩn bị môi trường và xây nền tảng để đọc các phần chuyên sâu hơn."
 ---
 
-Đây là trang khung cho nhóm **Bắt đầu** trong lộ trình học OpenTelemetry. Nội dung chi tiết sẽ được bổ sung theo từng bài.
+<Callout type="info" title="Phần này dành cho ai">
+  Phần **Bắt đầu** dành cho người đã biết phát triển phần mềm nhưng chưa cần có kinh nghiệm với OpenTelemetry (OTel). Bạn sẽ đi từ một mental model đơn giản đến việc chạy thử telemetry trong môi trường local.
+</Callout>
 
-## Phạm vi dự kiến
+## Mục lục
 
-Chuẩn bị môi trường và chạy ví dụ OpenTelemetry đầu tiên. Các trang trong sidebar đã được sắp xếp theo thứ tự học đề xuất.
+- [Mục tiêu đầu ra](#mục-tiêu-đầu-ra)
+- [Điều kiện trước khi học](#điều-kiện-trước-khi-học)
+  - [Kiến thức nên có](#kiến-thức-nên-có)
+  - [Những gì chưa cần biết](#những-gì-chưa-cần-biết)
+- [Bản đồ các bài trong nhóm](#bản-đồ-các-bài-trong-nhóm)
+- [Cách sử dụng tài liệu](#cách-sử-dụng-tài-liệu)
+  - [Đọc theo đường chính](#đọc-theo-đường-chính)
+  - [Học bằng cách kiểm chứng](#học-bằng-cách-kiểm-chứng)
+  - [Khi bị kẹt](#khi-bị-kẹt)
+- [Tiêu chí hoàn thành](#tiêu-chí-hoàn-thành)
+- [Bài kế tiếp](#bài-kế-tiếp)
 
-## Các bài trong nhóm
+## Mục tiêu đầu ra
 
-- [Lộ trình học](/getting-started/learning-path/) — Thứ tự học đề xuất từ khái niệm đến triển khai production.
-- [Chuẩn bị môi trường](/getting-started/environment/) — Toolchain, runtime và backend tối thiểu để thực hành.
-- [Trace đầu tiên](/getting-started/first-trace/) — Tạo, export và kiểm tra một trace tối thiểu.
-- [Local observability stack](/getting-started/local-stack/) — Dựng ứng dụng, Collector và backend local để thử nghiệm.
-- [Quy ước repository](/getting-started/repository-conventions/) — Cách tổ chức ví dụ, cấu hình và tài liệu trong repository này.
-- [Bước tiếp theo](/getting-started/next-steps/) — Các nhánh học tiếp sau khi hoàn thành phần khởi đầu.
+Sau khi hoàn thành phần này, bạn có thể:
+
+- Nói rõ OpenTelemetry giải quyết vấn đề gì trong việc quan sát một ứng dụng.
+- Phân biệt **telemetry** — dữ liệu mô tả hoạt động của hệ thống — với **backend**, nơi lưu trữ và hiển thị dữ liệu đó.
+- Nhận biết vai trò của trace, metric và log trong một tình huống debug cụ thể.
+- Mô tả đường đi cơ bản của dữ liệu: ứng dụng tạo telemetry, SDK gửi dữ liệu, rồi backend nhận dữ liệu trực tiếp hoặc qua Collector.
+- Chạy một ví dụ nhỏ, tạo một trace và kiểm tra kết quả ở nơi nhận telemetry.
+- Dựng một stack observability local tối thiểu để tiếp tục thử nghiệm an toàn trước khi triển khai thật.
+- Biết nên học phần nào tiếp theo thay vì cố học tất cả thành phần cùng lúc.
+
+Ví dụ, khi một request đến chậm, bạn không cần bắt đầu bằng việc đọc mọi cấu hình của Collector. Hãy xác định câu hỏi trước: trace giúp tìm operation chậm, metric cho biết độ trễ tăng trên diện rộng, còn log cung cấp chi tiết sự kiện hoặc lỗi. Cách đặt câu hỏi này là kỹ năng xuyên suốt tài liệu.
+
+## Điều kiện trước khi học
+
+### Kiến thức nên có
+
+Bạn nên có:
+
+- Kinh nghiệm viết và chạy một ứng dụng nhỏ bằng ít nhất một ngôn ngữ hoặc runtime.
+- Hiểu cơ bản về HTTP request, service, process và JSON.
+- Khả năng dùng terminal để cài dependency, đặt biến môi trường và đọc log.
+- Một repository hoặc ứng dụng mẫu để thêm instrumentation khi thực hành.
+
+Bạn không cần chuẩn bị một hệ thống production. Một service chạy trên máy cá nhân là đủ để bắt đầu.
+
+### Những gì chưa cần biết
+
+Bạn chưa cần biết trước về Collector, OTLP, sampling hay semantic conventions. Các thuật ngữ này sẽ được giải thích khi xuất hiện. **Instrumentation** nghĩa là thêm khả năng tạo telemetry vào code hoặc thư viện; ở giai đoạn đầu, bạn chỉ cần hiểu mục đích của nó trước khi đi sâu vào cách cấu hình.
+
+Nếu chưa có môi trường phù hợp, hãy bắt đầu ở [Chuẩn bị môi trường](/getting-started/environment/). Nếu đã có một service có thể chạy local, bạn có thể đọc [Trace đầu tiên](/getting-started/first-trace/) ngay sau khi xem lộ trình.
+
+## Bản đồ các bài trong nhóm
+
+Sidebar của nhóm này dùng thứ tự sau. Hãy đi từ trên xuống dưới nếu đây là lần đầu bạn học OTel.
+
+| Thứ tự | Bài | Bạn sẽ làm gì? |
+| --- | --- | --- |
+| 1 | [Bắt đầu](/getting-started/) | Xác định mục tiêu, điều kiện trước khi học và cách dùng nhóm tài liệu này. |
+| 2 | [Lộ trình học](/getting-started/learning-path/) | Chọn đường học tuần tự hoặc fast track theo vai trò của bạn. |
+| 3 | [Chuẩn bị môi trường](/getting-started/environment/) | Kiểm tra toolchain, runtime và thành phần cần cho việc thực hành. |
+| 4 | [Trace đầu tiên](/getting-started/first-trace/) | Tạo, export và kiểm tra một trace tối thiểu. |
+| 5 | [Local observability stack](/getting-started/local-stack/) | Kết nối ứng dụng, Collector và backend trong môi trường local. |
+| 6 | [Quy ước repository](/getting-started/repository-conventions/) | Đọc cách tổ chức ví dụ, cấu hình và tài liệu trong repository này. |
+| 7 | [Bước tiếp theo](/getting-started/next-steps/) | Chọn nhánh học phù hợp sau khi đã chạy được ví dụ đầu tiên. |
+
+Các bài 3 đến 5 tạo thành một vòng thực hành nhỏ: chuẩn bị môi trường, tạo telemetry, rồi mở rộng thành một stack local. Bài 6 giúp bạn đọc các ví dụ nhất quán hơn. Bài 7 là điểm nối sang các nhóm kiến thức tiếp theo.
+
+## Cách sử dụng tài liệu
+
+### Đọc theo đường chính
+
+Đọc [Lộ trình học](/getting-started/learning-path/) trước nếu bạn chưa biết nên bắt đầu từ đâu. Lộ trình giải thích khi nào cần chuyển từ khái niệm sang instrumentation, Collector và vận hành production.
+
+Nếu muốn có kết quả nhanh, đi theo chuỗi sau:
+
+1. [Chuẩn bị môi trường](/getting-started/environment/).
+2. [Trace đầu tiên](/getting-started/first-trace/).
+3. [Local observability stack](/getting-started/local-stack/).
+4. [Bước tiếp theo](/getting-started/next-steps/).
+
+Đừng bỏ qua phần giải thích chỉ vì bạn đã thấy trace xuất hiện. Một trace hiển thị được chưa có nghĩa là context propagation, sampling, attribute và cách export đã đúng cho production.
+
+### Học bằng cách kiểm chứng
+
+Mỗi khi đọc một khái niệm, hãy gắn nó với một quan sát cụ thể:
+
+- Với **trace**, tìm một request và xem các span của nó nối thành một đường đi như thế nào.
+- Với **metric**, kiểm tra một giá trị có thể tổng hợp theo thời gian, chẳng hạn số request hoặc độ trễ.
+- Với **log**, tìm thông tin chi tiết của một sự kiện hoặc lỗi.
+- Với **context propagation**, kiểm tra xem các service trong cùng một request có dùng chung trace ID hay không. Trace ID là mã định danh của toàn bộ request phân tán.
+
+Khi một bước không cho kết quả, ghi lại ba thứ: ứng dụng đã tạo gì, dữ liệu được gửi đến đâu và thành phần nào xác nhận đã nhận dữ liệu. Cách ghi này biến lỗi mơ hồ thành một đường đi có thể kiểm tra.
+
+### Khi bị kẹt
+
+Hãy quay lại câu hỏi nhỏ nhất có thể trả lời. Ví dụ, thay vì hỏi “vì sao observability không hoạt động?”, hãy hỏi “ứng dụng có tạo span không?”, rồi “span có được export không?” và cuối cùng “backend có hiển thị không?”.
+
+Bạn cũng có thể chuyển sang [Troubleshooting](/troubleshooting/) khi đã biết đường đi của telemetry. Nếu chưa có dữ liệu để điều tra, tiếp tục với [Trace đầu tiên](/getting-started/first-trace/) trước khi học các tối ưu nâng cao.
+
+## Tiêu chí hoàn thành
+
+Bạn có thể coi phần **Bắt đầu** đã hoàn thành khi có thể đánh dấu tất cả mục sau:
+
+- [ ] Giải thích bằng lời của mình telemetry là gì và OpenTelemetry đứng ở đâu trong hệ thống.
+- [ ] Chọn được signal phù hợp cho ít nhất ba câu hỏi: request đi qua đâu, hệ thống có chậm không và lỗi xảy ra ở sự kiện nào.
+- [ ] Chạy được một service local và chỉ ra nơi ứng dụng khởi tạo hoặc gửi telemetry.
+- [ ] Tạo được một trace có thể kiểm tra ở backend hoặc công cụ nhận telemetry trong ví dụ.
+- [ ] Vẽ được đường đi của một record từ ứng dụng đến nơi truy vấn, đồng thời biết Collector là thành phần trung gian tùy chọn trong đường đi đó.
+- [ ] Biết đọc lộ trình tiếp theo theo vai trò: developer thường đi sâu vào instrumentation; platform hoặc SRE thường đi sâu vào Collector, deployment và production.
+
+Nếu chưa đạt một mục, hãy quay lại bài tương ứng trong bảng trên. Không cần chờ hiểu toàn bộ OTel mới được chuyển sang phần tiếp theo; chỉ cần nắm được đường đi và biết cách kiểm chứng từng chặng.
+
+## Bài kế tiếp
+
+<Cards>
+  <Card title="Lộ trình học" href="/getting-started/learning-path/" description="Chọn thứ tự học từ Bắt đầu đến Reference, với fast track cho developer và platform hoặc SRE." />
+</Cards>

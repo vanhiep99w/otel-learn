@@ -1,15 +1,277 @@
 ---
 title: "Lộ trình học"
-description: "Thứ tự học đề xuất từ khái niệm đến triển khai production."
+description: "Thứ tự học đề xuất từ những bước đầu tiên đến vận hành OpenTelemetry trong production."
 ---
 
-Trang này là **placeholder** cho chủ đề **Lộ trình học**. Nội dung hướng dẫn, ví dụ và kiểm chứng sẽ được bổ sung sau.
+import { Step, Steps } from 'fumadocs-ui/components/steps';
 
-## Phạm vi dự kiến
+<Callout type="info" title="Cách chọn đường đi">
+  Lộ trình chính đi theo thứ tự dependency: hiểu vấn đề trước, tạo telemetry sau, rồi mới xử lý pipeline và vận hành. Bạn không cần đọc mọi bài trong một lần. Hãy dùng checkpoint để biết lúc nào mình đã đủ nền tảng cho bước kế tiếp.
+</Callout>
 
-Thứ tự học đề xuất từ khái niệm đến triển khai production.
+## Mục lục
 
-- Mental model và thuật ngữ cần biết.
-- Cấu hình hoặc ví dụ thực hành phù hợp.
-- Cách xác minh kết quả.
-- Failure modes, giới hạn và best practices.
+- [Cách dùng lộ trình](#cách-dùng-lộ-trình)
+  - [Hai đường đi đều bắt đầu từ cùng một mental model](#hai-đường-đi-đều-bắt-đầu-từ-cùng-một-mental-model)
+- [Lộ trình tuần tự](#lộ-trình-tuần-tự)
+  - [Bắt đầu và tạo tín hiệu đầu tiên](#bắt-đầu-và-tạo-tín-hiệu-đầu-tiên)
+  - [Xây mental model nền tảng](#xây-mental-model-nền-tảng)
+  - [Học telemetry signals](#học-telemetry-signals)
+  - [Instrument ứng dụng](#instrument-ứng-dụng)
+  - [Đưa dữ liệu qua Collector](#đưa-dữ-liệu-qua-collector)
+  - [Chọn protocol và backend](#chọn-protocol-và-backend)
+  - [Triển khai theo topology](#triển-khai-theo-topology)
+  - [Đưa observability vào production](#đưa-observability-vào-production)
+  - [Troubleshoot theo triệu chứng](#troubleshoot-theo-triệu-chứng)
+  - [Luyện tập bằng labs](#luyện-tập-bằng-labs)
+  - [Tra cứu và chuẩn hóa](#tra-cứu-và-chuẩn-hóa)
+- [Fast track theo vai trò](#fast-track-theo-vai-trò)
+  - [Fast track cho developer](#fast-track-cho-developer)
+  - [Fast track cho platform và SRE](#fast-track-cho-platform-và-sre)
+- [Checkpoint kiểm chứng](#checkpoint-kiểm-chứng)
+  - [Sau nhóm Bắt đầu](#sau-nhóm-bắt-đầu)
+  - [Sau Nền tảng và Telemetry signals](#sau-nền-tảng-và-telemetry-signals)
+  - [Sau Instrumentation, Collector và backend](#sau-instrumentation-collector-và-backend)
+  - [Trước khi đưa vào production](#trước-khi-đưa-vào-production)
+  - [Checkpoint vận hành](#checkpoint-vận-hành)
+- [Khi nào nên quay lại bước trước](#khi-nào-nên-quay-lại-bước-trước)
+- [Bước tiếp theo](#bước-tiếp-theo)
+
+## Cách dùng lộ trình
+
+Lộ trình này là một chuỗi câu hỏi, không phải danh sách phải đọc thuộc lòng. Ở mỗi chặng, hãy làm một ví dụ nhỏ rồi tự giải thích vì sao dữ liệu đi đến nơi nó đang ở.
+
+Một ví dụ cụ thể: nếu mục tiêu là biết request nào gọi database chậm, bạn cần trace và span để thấy đường đi của request. Khi muốn biết độ trễ tăng trên toàn bộ service, metric phù hợp hơn. Khi cần đọc stack trace hoặc thông báo lỗi, log thường là điểm bắt đầu. Cùng một ứng dụng có thể cần cả ba signal, nhưng mỗi signal trả lời một loại câu hỏi.
+
+### Hai đường đi đều bắt đầu từ cùng một mental model
+
+**Mental model** là mô hình tư duy giúp bạn dự đoán cách các thành phần tương tác. Trong OTel, mental model tối thiểu là:
+
+```text
+Ứng dụng ──tạo telemetry──► SDK hoặc agent ──export──► Collector ──gửi──► Backend
+                                  │                         │
+                                  └────── có thể gửi trực tiếp ───────────────┘
+```
+
+Collector là một service nhận, xử lý và chuyển tiếp telemetry. Nó không bắt buộc trong mọi kiến trúc; một ứng dụng có thể gửi trực tiếp đến backend. Tuy nhiên, Collector thường hữu ích khi cần gom nhiều nguồn, áp dụng chính sách chung hoặc đổi đích gửi.
+
+Developer thường ưu tiên tạo telemetry có ý nghĩa trong code. Platform và SRE thường ưu tiên đường đi ổn định, bảo mật, chi phí và khả năng vận hành. Hai hướng này dùng chung các khái niệm nền tảng, vì vậy đừng bỏ qua phần Nền tảng dù bạn chọn fast track nào.
+
+## Lộ trình tuần tự
+
+<Steps>
+<Step>
+
+### Bắt đầu và tạo tín hiệu đầu tiên
+
+Bắt đầu tại [Bắt đầu](/getting-started/), sau đó đi qua [Chuẩn bị môi trường](/getting-started/environment/), [Trace đầu tiên](/getting-started/first-trace/) và [Local observability stack](/getting-started/local-stack/). Cuối nhóm, đọc [Quy ước repository](/getting-started/repository-conventions/) và [Bước tiếp theo](/getting-started/next-steps/) để biết cách tiếp tục.
+
+**Khi học chặng này:** bạn chưa có môi trường hoặc chưa từng nhìn thấy telemetry của ứng dụng.
+
+**Mục tiêu chuyển chặng:** chạy được một service nhỏ, tạo được một trace và chỉ ra trace được nhận ở đâu. Đừng tối ưu sampling hay scaling ở đây; hãy tập trung vào đường đi cơ bản.
+
+</Step>
+<Step>
+
+### Xây mental model nền tảng
+
+Đọc [Nền tảng](/fundamentals/). Phần này giải thích observability là gì, OpenTelemetry giải quyết vấn đề nào, telemetry đi qua pipeline ra sao và context propagation nối các operation ở nhiều process như thế nào.
+
+Ví dụ, khi một request đi từ API service sang payment service, context propagation mang thông tin định danh của trace qua ranh giới process. Nhờ vậy, hai span ở hai service vẫn xuất hiện trong cùng một distributed trace thay vì thành hai trace rời rạc.
+
+**Khi học chặng này:** bạn muốn hiểu bản chất trước khi chọn thư viện hoặc backend.
+
+**Mục tiêu chuyển chặng:** mô tả được ứng dụng, SDK hoặc agent, OTLP, Collector và backend trong một sơ đồ. Bạn cũng cần phân biệt telemetry được tạo ở đâu với telemetry được lưu và truy vấn ở đâu.
+
+</Step>
+<Step>
+
+### Học telemetry signals
+
+Đọc [Telemetry signals](/signals/). Tập trung vào traces, spans, metrics, logs, exemplars, correlation và sampling.
+
+**Signal** là một loại dữ liệu telemetry có cách tổ chức và mục đích riêng. Một span mô tả một operation trong trace. Metric là các phép đo được tổng hợp theo thời gian. Log là bản ghi sự kiện có nội dung chi tiết. Ví dụ, dùng trace để tìm một request chậm; dùng metric để phát hiện latency p95 của cả service tăng; dùng log để đọc nguyên nhân lỗi cụ thể.
+
+**Khi học chặng này:** bạn đã tạo được trace nhưng chưa biết lúc nào nên dùng signal nào hoặc vì sao dữ liệu giữa các signal chưa nối với nhau.
+
+**Mục tiêu chuyển chặng:** chọn được signal cho một câu hỏi vận hành và giải thích được trade-off cơ bản của sampling, cardinality và correlation.
+
+</Step>
+<Step>
+
+### Instrument ứng dụng
+
+Đọc [Instrumentation](/instrumentation/). Đi từ API và SDK, auto-instrumentation, manual instrumentation, resources, configuration, propagators đến instrumentation libraries và testing instrumentation.
+
+**Instrumentation** là cách ứng dụng hoặc thư viện tạo ra telemetry. Auto-instrumentation thêm telemetry cho các framework phổ biến mà không cần sửa nhiều code. Manual instrumentation cho phép bạn đặt span, attribute hoặc event ở đúng business operation. Ví dụ, auto-instrumentation có thể ghi nhận một HTTP request, còn manual instrumentation có thể tạo span cho bước `calculate_shipping` vốn chỉ có ý nghĩa trong domain của bạn.
+
+**Khi học chặng này:** bạn đã hiểu signal và cần quyết định nên tự động thu thập phần nào, viết instrumentation thủ công phần nào.
+
+**Mục tiêu chuyển chặng:** tạo telemetry có tên, resource và context hợp lý; biết cách kiểm tra instrumentation thay vì chỉ kiểm tra backend có hiển thị dữ liệu hay không.
+
+</Step>
+<Step>
+
+### Đưa dữ liệu qua Collector
+
+Đọc [OpenTelemetry Collector](/collector/). Học cấu hình receiver, processor, exporter, connector, extension và pipeline.
+
+Pipeline là đường xử lý của Collector. **Receiver** nhận dữ liệu, **processor** biến đổi hoặc áp dụng chính sách, còn **exporter** gửi dữ liệu đến đích. Ví dụ, một pipeline có thể nhận OTLP từ ứng dụng, batch các record rồi export sang backend; mỗi chặng có thể được kiểm tra riêng khi xảy ra lỗi.
+
+**Khi học chặng này:** bạn có nhiều service, nhiều nguồn telemetry hoặc cần tách cấu hình gửi dữ liệu ra khỏi code ứng dụng.
+
+**Mục tiêu chuyển chặng:** đọc được một pipeline từ đầu đến cuối và biết thành phần nào chịu trách nhiệm khi dữ liệu bị drop, bị biến đổi hoặc không export được.
+
+</Step>
+<Step>
+
+### Chọn protocol và backend
+
+Đọc [Protocols và backends](/protocols-backends/). Bắt đầu với [OTLP](/protocols-backends/otlp/) và [OTLP gRPC và HTTP](/protocols-backends/otlp-grpc-http/), sau đó xem các lựa chọn backend như [Grafana stack](/protocols-backends/grafana-stack/) hoặc [vendor backends](/protocols-backends/vendor-backends/).
+
+**Protocol** là quy tắc định dạng và truyền dữ liệu giữa các thành phần. OTLP, viết tắt của OpenTelemetry Protocol, là protocol được thiết kế để truyền dữ liệu OTel. Backend là nơi nhận, lưu trữ, truy vấn và thường trực quan hóa telemetry.
+
+**Khi học chặng này:** telemetry đã được tạo nhưng bạn cần chọn cách truyền và nơi lưu phù hợp với môi trường của mình.
+
+**Mục tiêu chuyển chặng:** phân biệt lỗi ở application, protocol, network và backend. Bạn cũng cần biết đích gửi nào đang được dùng trước khi thay đổi cấu hình.
+
+</Step>
+<Step>
+
+### Triển khai theo topology
+
+Đọc [Triển khai](/deployment/). So sánh các cách chạy Collector và ứng dụng trong Docker, Kubernetes, sidecar, DaemonSet, gateway hoặc môi trường serverless. Đừng bỏ qua [Networking và TLS](/deployment/networking-tls/) khi dữ liệu đi qua network.
+
+**Topology** là cách các thành phần được bố trí và kết nối. Ví dụ, sidecar đặt Collector cạnh từng workload, còn gateway tập trung nhiều workload về một điểm xử lý. Sidecar thường đơn giản để cô lập theo workload; gateway có thể thuận tiện hơn cho chính sách chung và quản lý đích export.
+
+**Khi học chặng này:** ví dụ local đã chạy và bạn cần đưa mô hình đó vào runtime thật.
+
+**Mục tiêu chuyển chặng:** vẽ được topology, xác định traffic đi qua network nào và nêu được cách bảo vệ kết nối, cấu hình và quyền truy cập.
+
+</Step>
+<Step>
+
+### Đưa observability vào production
+
+Đọc [Production](/production/). Tập trung vào production readiness, performance, cardinality, reliability, security, cost control, scaling, upgrades và governance.
+
+Trong production, “có dữ liệu” chưa phải tiêu chí đủ. Ví dụ, thêm một attribute chứa `user_id` vào metric có thể tạo quá nhiều **cardinality** — số lượng giá trị kết hợp khác nhau của các label hoặc attribute — và làm tăng chi phí lưu trữ. Một thiết kế tốt phải cân bằng khả năng điều tra với chi phí, quyền riêng tư và độ ổn định.
+
+**Khi học chặng này:** telemetry đã phục vụ được một luồng thử nghiệm và bạn chuẩn bị dùng nó cho hệ thống thật.
+
+**Mục tiêu chuyển chặng:** có checklist cho độ tin cậy, bảo mật, chi phí, nâng cấp và giới hạn dữ liệu; biết metric nào chứng minh pipeline đang khỏe.
+
+</Step>
+<Step>
+
+### Troubleshoot theo triệu chứng
+
+Đọc [Troubleshooting](/troubleshooting/). Bắt đầu bằng [Triage](/troubleshooting/triage/), rồi đối chiếu triệu chứng như no data, missing spans, Collector errors, export failures, duplicate telemetry, high memory hoặc context loss.
+
+Hãy điều tra theo đường đi. Nếu không có dữ liệu, kiểm tra lần lượt việc tạo telemetry, export, nhận dữ liệu, xử lý và lưu trữ. Nếu chỉ mất span giữa hai service, ưu tiên kiểm tra context propagation và boundary của request trước khi sửa backend.
+
+**Khi học chặng này:** bạn cần tìm nguyên nhân thay vì thử ngẫu nhiên nhiều cấu hình.
+
+**Mục tiêu chuyển chặng:** biến một triệu chứng thành giả thuyết có thể kiểm tra và xác định chặng đầu tiên làm mất hoặc làm sai dữ liệu.
+
+</Step>
+<Step>
+
+### Luyện tập bằng labs
+
+Đọc [Labs](/labs/) sau khi đã có mental model và một pipeline cơ bản. Chọn lab gần mục tiêu: service tối thiểu, Collector pipeline, distributed trace, metrics dashboard, logs và traces, Kubernetes stack hoặc failure injection.
+
+Lab tốt không chỉ chứng minh “đã thấy dữ liệu”. Nó nên cho bạn một thay đổi có chủ ý, một kết quả dự kiến và một cách xác minh. Ví dụ, khi làm failure injection, hãy dự đoán signal nào thay đổi trước rồi mới so sánh với dữ liệu nhận được.
+
+**Khi học chặng này:** bạn muốn nối nhiều phần thành một hệ thống và luyện khả năng chẩn đoán.
+
+**Mục tiêu chuyển chặng:** tự dựng lại một luồng telemetry từ ứng dụng đến backend và giải thích được ít nhất một failure mode.
+
+</Step>
+<Step>
+
+### Tra cứu và chuẩn hóa
+
+Dùng [Reference](/reference/) trong suốt quá trình học, không chỉ ở cuối. Reference tập hợp [Glossary](/reference/glossary/), [environment variables](/reference/environment-variables/), [ports và protocols](/reference/ports-protocols/), [semantic conventions index](/reference/semantic-conventions-index/), [version compatibility](/reference/version-compatibility/) và [production checklist](/reference/production-checklist/).
+
+**Semantic convention** là quy ước tên và cấu trúc attribute để telemetry từ các ứng dụng khác nhau vẫn có ý nghĩa nhất quán. Khi cần thêm attribute, hãy tra quy ước trước khi tự đặt tên. Khi nâng cấp thành phần, hãy kiểm tra compatibility thay vì chỉ dựa vào việc service vẫn khởi động.
+
+**Khi học chặng này:** bạn cần một giá trị hoặc tên chính xác để cấu hình, review hoặc vận hành.
+
+**Mục tiêu hoàn thành:** có thể tự tra cứu thuật ngữ, biến môi trường, port, quy ước và checklist liên quan đến một thay đổi cụ thể.
+
+</Step>
+</Steps>
+
+## Fast track theo vai trò
+
+### Fast track cho developer
+
+Chọn đường ngắn này khi mục tiêu chính là instrument một ứng dụng và điều tra request:
+
+1. [Bắt đầu](/getting-started/) → [Trace đầu tiên](/getting-started/first-trace/).
+2. [Nền tảng](/fundamentals/) → [Telemetry signals](/signals/), ưu tiên traces, spans và correlation.
+3. [Instrumentation](/instrumentation/), sau đó thử một thay đổi manual instrumentation nhỏ.
+4. [Protocols và backends](/protocols-backends/) để hiểu app hoặc Collector gửi dữ liệu đi đâu.
+5. [Labs](/labs/) để nối distributed trace hoặc metrics với ứng dụng của bạn.
+6. Đọc [Production](/production/) và [Troubleshooting](/troubleshooting/) khi chuẩn bị chia sẻ telemetry với team hoặc đưa lên môi trường thật.
+
+Bạn có thể trì hoãn các chi tiết triển khai Collector, nhưng không nên bỏ qua context propagation, resources và cách kiểm tra export. Đây là những điểm thường quyết định trace của bạn có hữu ích hay không.
+
+### Fast track cho platform và SRE
+
+Chọn đường này khi mục tiêu chính là xây một đường telemetry dùng được cho nhiều workload:
+
+1. [Bắt đầu](/getting-started/) → [Local observability stack](/getting-started/local-stack/) để có một topology nhỏ làm mốc so sánh.
+2. [Nền tảng](/fundamentals/) và [Telemetry signals](/signals/) để xác định dữ liệu nào cần thu và câu hỏi vận hành nào cần trả lời.
+3. [OpenTelemetry Collector](/collector/) để học pipeline, processor, exporter và cách tách policy khỏi ứng dụng.
+4. [Protocols và backends](/protocols-backends/) → [Triển khai](/deployment/) để chọn transport, topology, network và TLS.
+5. [Production](/production/) để kiểm soát reliability, security, cardinality, cost và scaling.
+6. [Troubleshooting](/troubleshooting/) → [Labs](/labs/) để luyện failure mode và [Reference](/reference/) để chuẩn hóa việc vận hành.
+
+Đừng bắt đầu bằng một topology lớn. Nếu một pipeline local chưa có đường kiểm chứng rõ ràng, việc nhân bản nó sang nhiều node chỉ làm lỗi khó định vị hơn.
+
+## Checkpoint kiểm chứng
+
+### Sau nhóm Bắt đầu
+
+Bạn có thể vẽ đường đi từ service đến nơi hiển thị trace. Bạn cũng có thể trả lời ba câu hỏi: service tạo telemetry ở đâu, dữ liệu được export đến đâu và backend nhận bằng cách nào.
+
+Nếu chưa trả lời được, hãy quay lại [Trace đầu tiên](/getting-started/first-trace/) hoặc [Local observability stack](/getting-started/local-stack/) trước khi sang Collector.
+
+### Sau Nền tảng và Telemetry signals
+
+Cho một tình huống “checkout chậm và đôi khi lỗi”, bạn có thể nói signal nào giúp tìm request cụ thể, signal nào cho thấy xu hướng chung và signal nào chứa chi tiết lỗi. Bạn cũng giải thích được span là một operation trong trace và trace ID dùng để nối các phần của request.
+
+Nếu mọi câu trả lời đều là “dùng log”, hãy đọc lại [Telemetry signals](/signals/) và thử diễn đạt câu hỏi vận hành trước khi chọn signal.
+
+### Sau Instrumentation, Collector và backend
+
+Bạn có thể theo dõi một record qua các chặng tạo, export, receive, process và lưu trữ. Bạn biết cách phân biệt một lỗi instrumentation với một lỗi pipeline. Bạn cũng có thể giải thích vì sao manual instrumentation cho một operation nghiệp vụ có thể hữu ích hơn việc chỉ thu HTTP request.
+
+Một cách kiểm chứng đơn giản là cố ý thay đổi một chặng trong môi trường local, dự đoán kết quả rồi kiểm tra trace hoặc metric ở từng điểm có thể quan sát.
+
+### Trước khi đưa vào production
+
+Bạn có một topology rõ ràng, biết traffic đi qua network nào và biết dữ liệu nào có thể chứa thông tin nhạy cảm. Bạn đã nghĩ đến cardinality, retry, batch, sampling, quyền truy cập, chi phí và kế hoạch nâng cấp.
+
+Nếu chưa có câu trả lời cho một trong các câu hỏi này, hãy xem [Triển khai](/deployment/) và [Production](/production/) trước khi tăng quy mô.
+
+### Checkpoint vận hành
+
+Khi gặp lỗi, bạn có thể bắt đầu từ triệu chứng và thu hẹp về chặng đầu tiên bị lỗi. Bạn biết nơi tra tên attribute, port, biến môi trường, compatibility và checklist mà không phải đoán.
+
+Hãy thử dùng [Troubleshooting](/troubleshooting/) với một lab hoặc một lỗi local. Nếu đã xác định được nguyên nhân và có cách xác minh sau khi sửa, bạn đã sẵn sàng học sâu theo nhu cầu riêng.
+
+## Khi nào nên quay lại bước trước
+
+Quay lại **Nền tảng** nếu bạn không biết signal đang trả lời câu hỏi nào. Quay lại **Instrumentation** nếu span không có tên, resource hoặc context đúng. Quay lại **Collector** nếu dữ liệu đến Collector nhưng không đến backend. Quay lại **Protocols và backends** nếu lỗi chỉ xảy ra ở transport hoặc đích nhận. Quay lại **Reference** khi vấn đề là tên, port, biến môi trường hoặc compatibility.
+
+Các chặng không phải đường một chiều. Production và troubleshooting thường tạo ra câu hỏi mới cho instrumentation hoặc semantic conventions. Điểm quan trọng là quay lại đúng chặng chứa giả định đang sai.
+
+## Bước tiếp theo
+
+<Cards>
+  <Card title="Nền tảng" href="/fundamentals/" description="Xây mental model về observability, signals, pipeline và context propagation." />
+  <Card title="Trace đầu tiên" href="/getting-started/first-trace/" description="Nếu bạn muốn bắt tay vào thực hành ngay, hãy tạo và kiểm tra trace tối thiểu." />
+</Cards>

@@ -1,15 +1,145 @@
 ---
 title: "Bước tiếp theo"
-description: "Các nhánh học tiếp sau khi hoàn thành phần khởi đầu."
+description: "Chọn nhánh học OpenTelemetry theo vai trò, mục tiêu và kết quả bạn đã kiểm tra sau phần bắt đầu."
 ---
 
-Trang này là **placeholder** cho chủ đề **Bước tiếp theo**. Nội dung hướng dẫn, ví dụ và kiểm chứng sẽ được bổ sung sau.
+<Callout type="info" title="Đừng chọn theo thứ tự sidebar">
+  Sau khi chạy được trace, bài tiếp theo nên phụ thuộc vào việc bạn muốn giải quyết vấn đề nào. Bảng dưới đây nối từng mục tiêu với một nhánh có đầu ra kiểm chứng được. Bạn không cần đọc mọi trang trước khi làm bài thực hành.
+</Callout>
 
-## Phạm vi dự kiến
+## Mục lục
 
-Các nhánh học tiếp sau khi hoàn thành phần khởi đầu.
+- [Bắt đầu từ trạng thái hiện tại](#bắt-đầu-từ-trạng-thái-hiện-tại)
+  - [Checklist sau getting-started](#checklist-sau-getting-started)
+  - [Đọc kết quả checklist](#đọc-kết-quả-checklist)
+- [Ma trận chọn nhánh](#ma-trận-chọn-nhánh)
+  - [App developer](#app-developer)
+  - [Platform hoặc SRE](#platform-hoặc-sre)
+  - [Backend hoặc protocol](#backend-hoặc-protocol)
+  - [Production và troubleshooting](#production-và-troubleshooting)
+- [Decision guide: chưa thấy trace](#decision-guide-chưa-thấy-trace)
+  - [Kiểm tra theo thứ tự](#kiểm-tra-theo-thứ-tự)
+- [Bài thực hành tiếp theo](#bài-thực-hành-tiếp-theo)
+  - [Muốn instrument một service](#muốn-instrument-một-service)
+  - [Muốn hiểu pipeline](#muốn-hiểu-pipeline)
+  - [Muốn nối nhiều service](#muốn-nối-nhiều-service)
+- [Kết quả nên đạt được](#kết-quả-nên-đạt-được)
 
-- Mental model và thuật ngữ cần biết.
-- Cấu hình hoặc ví dụ thực hành phù hợp.
-- Cách xác minh kết quả.
-- Failure modes, giới hạn và best practices.
+## Bắt đầu từ trạng thái hiện tại
+
+Không phải ai hoàn thành getting-started cũng đứng ở cùng một điểm. Hãy đánh dấu những điều bạn đã làm được trước khi chọn bài tiếp theo.
+
+### Checklist sau getting-started
+
+- [ ] Tôi phân biệt được trace, metric và log, cũng như câu hỏi mà mỗi signal trả lời.
+- [ ] Tôi biết `service.name` là resource attribute dùng để nhận diện service trong backend.
+- [ ] Tôi tạo được một span từ ứng dụng hoặc script thử nghiệm.
+- [ ] Tôi biết ứng dụng gửi telemetry đến endpoint nào và bằng OTLP/HTTP hay OTLP/gRPC.
+- [ ] Tôi đọc được pipeline gồm receiver, processor và exporter trong Collector.
+- [ ] Tôi tìm được trace trong UI bằng `service.name` và xem được trace ID.
+- [ ] Tôi biết cách đọc logs của Collector và kiểm tra health endpoint.
+- [ ] Tôi có thể nêu một khác biệt giữa local stack và production, chẳng hạn local dùng memory còn production cần lưu trữ bền vững.
+
+Nếu bạn chưa đánh dấu được ba mục cuối, hãy chạy lại [Local observability stack](/getting-started/local-stack/) hoặc [Trace đầu tiên](/getting-started/first-trace/) trước khi mở rộng phạm vi. Một trace nhìn thấy trong UI là bằng chứng tốt hơn việc chỉ đọc cấu hình.
+
+### Đọc kết quả checklist
+
+| Trạng thái | Việc nên làm ngay |
+| --- | --- |
+| Chưa tạo được span | Quay lại [API và SDK](/instrumentation/api-sdk/) và [Manual instrumentation](/instrumentation/manual-instrumentation/). |
+| Có span nhưng không export được | Đọc [SDK configuration](/instrumentation/configuration/) rồi kiểm tra [OTLP/gRPC và OTLP/HTTP](/protocols-backends/otlp-grpc-http/). |
+| Export thành công nhưng chưa hiểu đường đi | Đọc [Telemetry pipeline](/fundamentals/telemetry-pipeline/) và [Collector overview](/collector/overview/). |
+| Đã thấy một trace và muốn instrument nhanh hơn | Thử [Auto-instrumentation](/instrumentation/auto-instrumentation/) trên runtime của bạn. |
+| Đã thấy trace nhưng muốn vận hành ổn định | Chuyển sang [Production readiness](/production/production-readiness/) và [Reliability](/production/reliability/). |
+
+## Ma trận chọn nhánh
+
+Chọn một hàng theo công việc bạn đang làm. “Đầu ra kiểm chứng” là thứ bạn có thể quan sát hoặc kiểm tra sau khi học, không chỉ là một danh sách trang đã đọc.
+
+| Vai trò hoặc mục tiêu | Bắt đầu ở đâu | Sau đó đọc | Đầu ra kiểm chứng |
+| --- | --- | --- | --- |
+| **App developer**: tạo telemetry trong code | [API và SDK](/instrumentation/api-sdk/) | [Resources](/instrumentation/resources/), [Manual instrumentation](/instrumentation/manual-instrumentation/) | Một span có tên có nghĩa, `service.name` đúng và attributes truy vấn được. |
+| **App developer**: instrument nhiều dependency nhanh | [Auto-instrumentation](/instrumentation/auto-instrumentation/) | [Instrumentation libraries](/instrumentation/instrumentation-libraries/), [SDK configuration](/instrumentation/configuration/) | Request đến database hoặc HTTP client xuất hiện trong trace mà không sửa từng call site. |
+| **Platform hoặc SRE**: nhận và chuyển telemetry | [Collector overview](/collector/overview/) | [Collector configuration](/collector/configuration/), [Service pipelines](/collector/pipelines/), [Receivers](/collector/receivers/) | Có pipeline trace rõ ràng; logs và health signal giúp xác định Collector đang sống và đang forward dữ liệu. |
+| **Platform hoặc SRE**: chọn topology triển khai | [Docker](/deployment/docker/) | [Agent và gateway](/deployment/agent-gateway/), [Kubernetes](/deployment/kubernetes/) | Chọn được vị trí Collector, failure domain và đường mạng cho một workload cụ thể. |
+| **Backend hoặc protocol**: hiểu transport | [OTLP](/protocols-backends/otlp/) | [OTLP/gRPC và OTLP/HTTP](/protocols-backends/otlp-grpc-http/), [Ports và protocols](/reference/ports-protocols/) | Xác định đúng endpoint, port, header và protocol giữa SDK, Collector và backend. |
+| **Backend hoặc protocol**: đánh giá nơi lưu trace | [Jaeger](/protocols-backends/jaeger/) | [Grafana stack](/protocols-backends/grafana-stack/), [Vendor backends](/protocols-backends/vendor-backends/) | So sánh được cách backend nhận, lưu, truy vấn và liên kết trace với hệ thống hiện có. |
+| **Production hoặc troubleshooting**: làm telemetry đáng tin cậy | [Production readiness](/production/production-readiness/) | [Reliability](/production/reliability/), [Security](/production/security/), [Cost control](/production/cost-control/) | Có checklist về retry, queue, secrets, PII, sampling, retention và chi phí trước rollout. |
+| **Production hoặc troubleshooting**: xử lý “không có dữ liệu” | [Triage checklist](/troubleshooting/triage/) | [Không có dữ liệu](/troubleshooting/no-data/), [Export thất bại](/troubleshooting/export-failures/), [Collector errors](/troubleshooting/collector-errors/) | Khoanh vùng được lỗi ở instrumentation, transport, Collector hay backend bằng evidence cụ thể. |
+
+### App developer
+
+Chọn nhánh này nếu bạn sở hữu code tạo request. Học [Resources](/instrumentation/resources/) sớm vì `service.name`, deployment environment và version quyết định cách tìm service trong backend. Sau đó làm [Lab: minimal service](/labs/minimal-service/) để biến một trace nhìn thấy được thành một service có instrumentation có chủ đích.
+
+Khi cần nối trace giữa các process, chuyển sang [Context propagation](/fundamentals/context-propagation/) và [Propagators](/instrumentation/propagators/). Context propagation là cơ chế truyền trace context qua ranh giới HTTP, message hoặc process; nếu thiếu nó, các span sẽ không cùng một distributed trace.
+
+### Platform hoặc SRE
+
+Chọn nhánh này nếu bạn vận hành đường ống telemetry. Đọc [Collector configuration](/collector/configuration/) cùng [Service pipelines](/collector/pipelines/) để biết một record đi qua các component nào. Tiếp theo, so sánh [Agent và gateway](/deployment/agent-gateway/) thay vì mặc định đặt một Collector duy nhất ở mọi nơi.
+
+Khi đã có topology, dùng [Networking và TLS](/deployment/networking-tls/) để kiểm tra trust boundary, certificate và firewall. Đầu ra nên là một sơ đồ deployment có endpoint rõ ràng, không chỉ là một file YAML chạy được trên laptop.
+
+### Backend hoặc protocol
+
+Chọn nhánh này nếu câu hỏi chính là “telemetry đi bằng đường nào và backend nhận nó ra sao?”. Bắt đầu với [OTLP](/protocols-backends/otlp/), sau đó so sánh [OTLP/gRPC và OTLP/HTTP](/protocols-backends/otlp-grpc-http/). Hãy ghi lại host, port, path, TLS và authentication của hệ thống bạn đang dùng.
+
+Nếu cần chọn backend, đọc [Jaeger](/protocols-backends/jaeger/) để hiểu trace backend cơ bản, rồi đối chiếu [Grafana stack](/protocols-backends/grafana-stack/) hoặc [Vendor backends](/protocols-backends/vendor-backends/). Đừng đánh giá chỉ dựa trên UI. Hãy kiểm tra cả retention, query model, chi phí và cách backend liên kết với metrics hoặc logs.
+
+### Production và troubleshooting
+
+Chọn nhánh này khi telemetry đã xuất hiện nhưng chưa thể tin cậy trong vận hành. Đọc [Production readiness](/production/production-readiness/) trước, rồi đi sâu vào [Reliability](/production/reliability/), [Security](/production/security/) và [Cost control](/production/cost-control/).
+
+Nếu đang có sự cố cụ thể, bắt đầu ở [Triage checklist](/troubleshooting/triage/). Triage là quá trình thu thập evidence và thu hẹp phạm vi lỗi trước khi sửa config. Sau đó đi theo [Không có dữ liệu](/troubleshooting/no-data/), [Thiếu spans](/troubleshooting/missing-spans/) hoặc [Collector dùng nhiều memory](/troubleshooting/high-memory/) tùy triệu chứng.
+
+## Decision guide: chưa thấy trace
+
+Đừng đổi đồng thời SDK, Collector và backend. Mỗi bước dưới đây kiểm tra một boundary, tức một ranh giới mà telemetry phải đi qua.
+
+### Kiểm tra theo thứ tự
+
+1. **Ứng dụng có tạo span không?** Kiểm tra log hoặc test của instrumentation. Nếu chưa có span, quay lại [Manual instrumentation](/instrumentation/manual-instrumentation/) hoặc [Auto-instrumentation](/instrumentation/auto-instrumentation/).
+2. **Resource có `service.name` không?** Nếu thiếu, backend có thể gom dữ liệu vào tên mặc định hoặc khiến bạn tìm sai service. Xem [Resources](/instrumentation/resources/).
+3. **Exporter có trỏ đúng endpoint không?** Đối chiếu protocol và port với [OTLP/gRPC và OTLP/HTTP](/protocols-backends/otlp-grpc-http/). Với local stack của bài trước, OTLP/HTTP là `http://localhost:4318/v1/traces`.
+4. **Collector có nhận request không?** Kiểm tra receiver, logs và health bằng [Collector errors](/troubleshooting/collector-errors/). Health thành công chỉ chứng minh process sống; nó không chứng minh pipeline đã export trace.
+5. **Exporter có đến backend không?** Tìm lỗi DNS, connection refused, TLS hoặc authentication trong logs. Đọc [Export thất bại](/troubleshooting/export-failures/).
+6. **Bạn đang tìm đúng nơi và đúng khoảng thời gian không?** Dùng `service.name`, mở rộng time range và kiểm tra clock của máy. Nếu trace có root span nhưng thiếu child spans, xem [Thiếu spans](/troubleshooting/missing-spans/).
+
+<Callout type="idea" title="Một phép thử cô lập">
+  Gửi một trace tối thiểu qua cùng endpoint mà ứng dụng dùng. Nếu trace tối thiểu xuất hiện, transport và backend có khả năng hoạt động; hãy tập trung vào instrumentation hoặc resource của ứng dụng. Nếu trace tối thiểu cũng mất, tập trung vào endpoint, Collector và exporter.
+</Callout>
+
+## Bài thực hành tiếp theo
+
+Chọn bài theo điều bạn muốn chứng minh, không theo số lượng trang đã đọc.
+
+### Muốn instrument một service
+
+Làm [Lab: minimal service](/labs/minimal-service/) sau khi đọc [API và SDK](/instrumentation/api-sdk/). Hãy đặt mục tiêu cụ thể: một request tạo root span, một dependency tạo child span, và trace có `service.name` ổn định. Kiểm tra kết quả bằng UI hoặc exporter test, không chỉ kiểm tra process có khởi động.
+
+Nếu bạn muốn thử nhiều ngôn ngữ, chọn trang language tương ứng trong [Languages](/languages/), rồi áp dụng lại cùng checklist resource và exporter. Cùng một mental model giúp bạn so sánh SDK giữa các runtime.
+
+### Muốn hiểu pipeline
+
+Làm [Lab: Collector pipeline](/labs/collector-pipeline/). Trước khi chạy, vẽ ba ô receiver → processor → exporter cho signal trace. Sau khi chạy, thay đổi từng component một và quan sát logs hoặc output backend để biết component đó có tác dụng gì.
+
+Đọc [Processors](/collector/processors/) khi cần batch, filter hoặc memory limiter. Processor là component sửa, lọc hoặc gom telemetry trước khi export; mỗi processor đều có trade-off về dữ liệu, latency hoặc memory.
+
+### Muốn nối nhiều service
+
+Làm [Lab: distributed trace](/labs/distributed-trace/) sau khi nắm [Context propagation](/fundamentals/context-propagation/). Kiểm tra một request xuyên qua ít nhất hai service có cùng trace ID nhưng có span ID khác nhau. Nếu trace bị tách, dùng [Mất context](/troubleshooting/context-loss/) thay vì chỉ tăng sampling hoặc restart backend.
+
+## Kết quả nên đạt được
+
+Sau nhánh tiếp theo, bạn nên có một artifact cụ thể:
+
+- App developer có một service instrumented, resource naming rõ ràng và test cho span hoặc exporter. Xem thêm [Kiểm thử instrumentation](/instrumentation/testing-instrumentation/).
+- Platform hoặc SRE có topology, pipeline YAML và cách kiểm tra health/logs. Tiếp tục với [Scaling](/production/scaling/) khi cần ước lượng tải.
+- Backend hoặc protocol có bảng endpoint gồm protocol, port, TLS và authentication. Đối chiếu [Environment variables](/reference/environment-variables/) khi cấu hình qua biến môi trường.
+- Người làm production có checklist về reliability, security, cost và upgrade. Dùng [Upgrade và compatibility](/production/upgrades/) trước khi nâng version SDK, Collector hoặc backend.
+
+<Cards>
+  <Card title="Lab: minimal service" href="/labs/minimal-service/" description="Bắt đầu từ một service nhỏ có trace kiểm chứng được." />
+  <Card title="Lab: Collector pipeline" href="/labs/collector-pipeline/" description="Tập trung vào receiver, processor và exporter." />
+  <Card title="Triage checklist" href="/troubleshooting/triage/" description="Điều tra telemetry bằng evidence thay vì đoán config." />
+  <Card title="Production readiness" href="/production/production-readiness/" description="Đánh giá các điều kiện cần trước khi rollout." />
+</Cards>

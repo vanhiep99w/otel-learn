@@ -1,15 +1,467 @@
 ---
 title: "Quy ước repository"
-description: "Cách tổ chức ví dụ, cấu hình và tài liệu trong repository này."
+description: "Cách tổ chức, viết, liên kết và kiểm tra tài liệu trong repository OpenTelemetry Learning."
 ---
 
-Trang này là **placeholder** cho chủ đề **Quy ước repository**. Nội dung hướng dẫn, ví dụ và kiểm chứng sẽ được bổ sung sau.
+import { Step, Steps } from 'fumadocs-ui/components/steps';
+import { File, Folder, Files } from 'fumadocs-ui/components/files';
 
-## Phạm vi dự kiến
+<Callout type="info" title="Phạm vi của trang này">
+  Đây là quy ước của repository hiện tại, không phải một template chung cho mọi
+  dự án OpenTelemetry. Repository này là website docs-only dùng Next.js,
+  Fumadocs và static export. Hãy ưu tiên cây thư mục, script và cấu hình đang có
+  thay vì tự tạo thư mục `examples/`, `configs/` hoặc một app demo chưa tồn tại.
+</Callout>
 
-Cách tổ chức ví dụ, cấu hình và tài liệu trong repository này.
+## Mục lục
 
-- Mental model và thuật ngữ cần biết.
-- Cấu hình hoặc ví dụ thực hành phù hợp.
-- Cách xác minh kết quả.
-- Failure modes, giới hạn và best practices.
+- [Tổng quan repository](#tổng-quan-repository)
+- [Cây thư mục thực tế](#cây-thư-mục-thực-tế)
+- [Nội dung docs và navigation](#nội-dung-docs-và-navigation)
+  - [Trang MDX](#trang-mdx)
+  - [Tệp meta.json](#tệp-metajson)
+- [Quy ước đặt tên và routing](#quy-ước-đặt-tên-và-routing)
+- [Frontmatter, mục lục và liên kết](#frontmatter-mục-lục-và-liên-kết)
+  - [Frontmatter](#frontmatter)
+  - [Mục lục thủ công](#mục-lục-thủ-công)
+  - [Liên kết nội bộ](#liên-kết-nội-bộ)
+- [Components và code blocks](#components-và-code-blocks)
+  - [Components Fumadocs](#components-fumadocs)
+  - [Code blocks](#code-blocks)
+- [Quy trình thêm hoặc sửa trang](#quy-trình-thêm-hoặc-sửa-trang)
+  - [Sửa một trang có sẵn](#sửa-một-trang-có-sẵn)
+    - [Đọc context trước khi sửa](#đọc-context-trước-khi-sửa)
+    - [Sửa nội dung MDX](#sửa-nội-dung-mdx)
+    - [Kiểm tra link và ví dụ](#kiểm-tra-link-và-ví-dụ)
+  - [Thêm một trang mới](#thêm-một-trang-mới)
+  - [Chạy các kiểm tra](#chạy-các-kiểm-tra)
+- [Tệp được sinh tự động](#tệp-được-sinh-tự-động)
+- [Checklist review](#checklist-review)
+
+## Tổng quan repository
+
+`otel-learn` là website tài liệu tiếng Việt về OpenTelemetry. Đây là repository
+docs-only: source chính là các trang MDX trong `content/docs/`, còn `src/` chứa
+ứng dụng Next.js và lớp tích hợp Fumadocs để đọc các trang đó.
+
+Next.js được cấu hình với `output: 'export'`. Nghĩa là quá trình build tạo các
+tệp HTML tĩnh thay vì yêu cầu Next.js server runtime khi deploy. `dist/` là thư
+mục output được đặt tên riêng trong `next.config.mjs`. Route docs ở root nên
+website mở trực tiếp vào docs, không có landing page riêng.
+
+Một trang MDX đi qua pipeline sau:
+
+```text
+content/docs/*.mdx
+        │
+        ▼
+  fumadocs-mdx  ──►  .source/ (generated source)
+        │
+        ▼
+  src/lib/source.ts + Next.js
+        │
+        ▼
+  /<category>/<slug>/  ──►  dist/ (static export sau build)
+```
+
+`source.config.ts` khai báo collection ở `content/docs`, dùng `pageSchema` cho
+frontmatter và `metaSchema` cho navigation metadata. Cấu hình này cũng bật
+`remarkMdxMermaid`, tức plugin chuyển fenced block `mermaid` thành component
+Mermaid trong pipeline MDX.
+
+## Cây thư mục thực tế
+
+Các thư mục và file source chính hiện có:
+
+<Files>
+  <File name="README.md" />
+  <File name="package.json" />
+  <File name="source.config.ts" />
+  <Folder name="content" defaultOpen>
+    <Folder name="docs" defaultOpen>
+      <File name="meta.json" />
+      <Folder name="fundamentals">
+        <File name="index.mdx" />
+        <File name="meta.json" />
+      </Folder>
+      <Folder name="getting-started" defaultOpen>
+        <File name="index.mdx" />
+        <File name="meta.json" />
+        <File name="environment.mdx" />
+        <File name="first-trace.mdx" />
+        <File name="learning-path.mdx" />
+        <File name="local-stack.mdx" />
+        <File name="next-steps.mdx" />
+        <File name="repository-conventions.mdx" />
+      </Folder>
+      <Folder name="collector">
+        <File name="meta.json" />
+      </Folder>
+      <Folder name="deployment">
+        <File name="meta.json" />
+      </Folder>
+      <Folder name="instrumentation">
+        <File name="meta.json" />
+      </Folder>
+      <Folder name="languages">
+        <File name="meta.json" />
+      </Folder>
+      <Folder name="labs">
+        <File name="meta.json" />
+      </Folder>
+      <Folder name="production">
+        <File name="meta.json" />
+      </Folder>
+      <Folder name="protocols-backends">
+        <File name="meta.json" />
+      </Folder>
+      <Folder name="reference">
+        <File name="meta.json" />
+      </Folder>
+      <Folder name="signals">
+        <File name="meta.json" />
+      </Folder>
+      <Folder name="troubleshooting">
+        <File name="meta.json" />
+      </Folder>
+    </Folder>
+  </Folder>
+  <Folder name="src" defaultOpen>
+    <Folder name="app">
+      <File name="favicon.ico" />
+      <File name="global.css" />
+      <File name="layout.tsx" />
+      <Folder name="[[...slug]]">
+        <File name="layout.tsx" />
+        <File name="page.tsx" />
+      </Folder>
+      <Folder name="api/search">
+        <File name="route.ts" />
+      </Folder>
+      <Folder name="llms.txt">
+        <File name="route.ts" />
+      </Folder>
+      <Folder name="llms-full.txt">
+        <File name="route.ts" />
+      </Folder>
+      <Folder name="llms.mdx/docs/[[...slug]]">
+        <File name="route.ts" />
+      </Folder>
+      <Folder name="og/docs/[...slug]">
+        <File name="route.tsx" />
+      </Folder>
+    </Folder>
+    <Folder name="components">
+      <File name="mdx.tsx" />
+      <File name="mermaid.tsx" />
+      <File name="provider.tsx" />
+      <File name="search.tsx" />
+    </Folder>
+    <Folder name="lib">
+      <File name="layout.shared.tsx" />
+      <File name="shared.ts" />
+      <File name="source.ts" />
+    </Folder>
+  </Folder>
+  <File name="next.config.mjs" />
+  <File name=".gitignore" />
+</Files>
+
+Trong cây trên, các category được liệt kê theo `content/docs/meta.json`. Mỗi
+category hiện có một `meta.json` riêng. Các trang chi tiết khác nằm trong cùng
+các folder đó; không nên suy ra một thư mục con chỉ vì một chủ đề có thể cần nó
+trong tương lai.
+
+## Nội dung docs và navigation
+
+### Trang MDX
+
+Mỗi file `.mdx` dưới `content/docs/` là một trang tài liệu. `index.mdx` đại
+diện cho trang đầu của category. Ví dụ:
+
+- `content/docs/getting-started/index.mdx` tạo route
+  `/getting-started/`.
+- `content/docs/getting-started/environment.mdx` tạo route
+  `/getting-started/environment/`.
+- `content/docs/fundamentals/index.mdx` tạo route `/fundamentals/`.
+
+`src/lib/source.ts` gọi `docs.toFumadocsSource()` rồi đưa collection cho
+Fumadocs loader. `src/app/[[...slug]]/page.tsx` lấy page theo slug, render
+frontmatter và body MDX. Vì vậy, nội dung trang nên nằm trong `content/docs/`;
+không copy nội dung docs vào component React.
+
+### Tệp meta.json
+
+`content/docs/meta.json` quyết định thứ tự các category trong navigation. Ví dụ,
+slug `getting-started` trỏ tới folder `content/docs/getting-started/`.
+`content/docs/getting-started/meta.json` quyết định thứ tự các trang trong nhóm
+Bắt đầu:
+
+```json
+{
+  "title": "Bắt đầu",
+  "pages": [
+    "index",
+    "learning-path",
+    "environment",
+    "first-trace",
+    "local-stack",
+    "repository-conventions",
+    "next-steps"
+  ]
+}
+```
+
+Giá trị trong `pages` là slug hoặc tên file bỏ phần mở rộng `.mdx`. Không thêm
+`.mdx` vào giá trị này. Khi đổi thứ tự, hãy nhớ rằng thứ tự đó cũng là thứ tự
+người học nhìn thấy trong sidebar.
+
+Khi thêm trang vào một category, cập nhật `meta.json` của category đó. Nếu
+trang không cần xuất hiện trong sidebar, trước tiên phải xác nhận đó là chủ ý;
+đừng tạo một file `meta.json` mới ở nơi không có category tương ứng.
+
+## Quy ước đặt tên và routing
+
+- Dùng chữ thường cho tên folder và file.
+- Dùng kebab-case cho slug nhiều từ, ví dụ `first-trace.mdx` và
+  `repository-conventions.mdx`.
+- Giữ tên `index.mdx` cho trang đầu category.
+- Giữ đúng tên `meta.json`, `source.config.ts` và các file cấu hình đã có.
+- Không đổi tên file chỉ để dịch slug. Slug ổn định giúp link và bookmark của
+  người đọc không bị hỏng.
+
+`next.config.mjs` bật `trailingSlash: true`, nên route public luôn có dấu `/`
+ở cuối. Mapping quan trọng là:
+
+```text
+content/docs/<category>/<page>.mdx
+               │
+               └── /<category>/<page>/
+
+content/docs/<category>/index.mdx
+               │
+               └── /<category>/
+```
+
+Route của một trang không phải là đường dẫn tuyệt đối trên filesystem. Trong
+nội dung, dùng route public như `/getting-started/environment/`; khi sửa source,
+dùng path file như `content/docs/getting-started/environment.mdx`.
+
+## Frontmatter, mục lục và liên kết
+
+### Frontmatter
+
+Mỗi trang phải có YAML frontmatter ở đầu file. `pageSchema` trong
+`source.config.ts` dùng frontmatter đó để tạo metadata của Fumadocs.
+
+```mdx
+---
+title: "Tên trang"
+description: "Một câu mô tả ngắn cho kết quả tìm kiếm và phần đầu trang."
+---
+```
+
+`title` được render thành H1 bởi layout docs. Vì vậy, không thêm `# Tên trang`
+ở body. Sau frontmatter, có thể đặt một `<Callout>` giới thiệu phạm vi hoặc
+đối tượng đọc trước phần `## Mục lục`.
+
+`description` nên nói rõ người đọc sẽ làm được gì hoặc hiểu điều gì sau khi đọc.
+Đừng đặt một đoạn dài hoặc nhiều ý không liên quan vào trường này.
+
+### Mục lục thủ công
+
+Mỗi trang cần một mục `## Mục lục` viết tay. Đặt nó sau frontmatter và phần
+callout mở đầu, trước section nội dung đầu tiên. Mục lục phải liệt kê mọi
+heading `##` và `###` thật sự có trong trang, với `###` thụt vào dưới `##`:
+
+```mdx
+## Mục lục
+
+- [Tổng quan](#tổng-quan)
+- [Cài đặt](#cài-đặt)
+  - [Kiểm tra](#kiểm-tra)
+```
+
+Fumadocs tạo anchor bằng cách viết thường, thay khoảng trắng bằng dấu gạch
+ngang và bỏ dấu câu; chữ tiếng Việt có dấu được giữ lại. Sau khi đổi heading,
+phải đổi anchor tương ứng trong mục lục. Không dùng H1 trong body và không đưa
+các heading không tồn tại vào mục lục.
+
+### Liên kết nội bộ
+
+Liên kết đến trang docs bằng route public tuyệt đối và luôn có trailing slash:
+
+```mdx
+Đọc thêm [Nền tảng](/fundamentals/) trước khi instrument ứng dụng.
+
+<Cards>
+  <Card
+    title="Chuẩn bị môi trường"
+    href="/getting-started/environment/"
+    description="Kiểm tra toolchain trước khi thực hành."
+  />
+</Cards>
+```
+
+Kiểm tra route bằng cách đối chiếu file trong `content/docs/`. Ví dụ,
+`/fundamentals/telemetry-pipeline/` chỉ hợp lệ khi
+`content/docs/fundamentals/telemetry-pipeline.mdx` tồn tại. Không link tới
+placeholder, file hoặc folder chưa có trong repository. Link ngoài dùng URL đầy
+đủ và chỉ nên thêm khi nguồn đó thực sự cần thiết.
+
+## Components và code blocks
+
+### Components Fumadocs
+
+Dùng component khi nó làm rõ cấu trúc, không dùng component chỉ để trang trí.
+Các component mặc định như `Callout`, `Cards` và `Card` đã được cung cấp qua
+`src/components/mdx.tsx`, nên các trang hiện tại không import chúng.
+
+Với component không mặc định, dùng đúng import ở đầu file. Ví dụ trang có cây
+thư mục dùng:
+
+```mdx
+import { File, Folder, Files } from 'fumadocs-ui/components/files';
+```
+
+Các quy ước đang dùng:
+
+- `<Callout type="info|warn|error|idea" title="...">` cho ghi chú, cảnh báo,
+lỗi hoặc mẹo. Nêu hành động cụ thể sau cảnh báo.
+- `<Steps>` và `<Step>` cho quy trình theo thứ tự. Mỗi `<Step>` thường chứa một
+  heading `###` và một hành động có thể làm được.
+- `<Cards>` và `<Card>` để nối sang các bài liên quan ở cuối trang. `href` phải
+  là route có trailing slash.
+- `<Files>`, `<Folder>` và `<File>` cho cây thư mục đã kiểm chứng.
+- Fenced block `mermaid` được `remarkMdxMermaid` xử lý và component `Mermaid`
+  trong `src/components/mdx.tsx` render ở phía client. Giữ diagram ở dạng text
+  để dễ review và version control.
+
+### Code blocks
+
+Chọn language tag phù hợp để Shiki tô màu và để người đọc biết shell hoặc
+ngôn ngữ đang dùng:
+
+- `bash` cho lệnh terminal trên Linux/macOS.
+- `powershell` khi cú pháp Windows khác đáng kể.
+- `ts`, `tsx`, `js`, `json` cho source hoặc dữ liệu cấu hình thực sự có trong
+  repository.
+- `yaml` cho cấu hình khi bài học đã cung cấp file YAML tương ứng.
+- `text` cho output, cây thư mục hoặc giá trị không có ngôn ngữ.
+
+Ví dụ lệnh phải copy được và không chứa prompt `$`. Chú thích nguyên nhân hoặc
+kết quả ở ngoài code block. Một block nên phục vụ một mục đích; tách lệnh cài,
+lệnh chạy và lệnh kiểm tra thay vì gom một đoạn shell dài khó đọc.
+
+Không trình bày một file cấu hình tưởng tượng như thể nó đã tồn tại. Nếu chỉ
+minh họa cú pháp, nói rõ đó là ví dụ tối giản và chỉ dùng tên binding, port hoặc
+path đã được giải thích trong bài.
+
+## Quy trình thêm hoặc sửa trang
+
+### Sửa một trang có sẵn
+
+<Steps>
+<Step>
+
+### Đọc context trước khi sửa
+
+Mở `meta.json` của category, trang liền kề và các route mà trang đang link tới.
+Giữ title, độ sâu heading, thuật ngữ tiếng Việt và mức chi tiết nhất quán với
+nhóm. Nếu trang là placeholder, thay nội dung placeholder thay vì tạo một file
+trùng chủ đề.
+
+</Step>
+<Step>
+
+### Sửa nội dung MDX
+
+Giữ frontmatter ở đầu file, không thêm H1 body, cập nhật mục lục thủ công sau
+khi chốt heading. Khi dùng component, kiểm tra import và prop theo component
+đang được đăng ký trong `src/components/mdx.tsx`.
+
+</Step>
+<Step>
+
+### Kiểm tra link và ví dụ
+
+Đối chiếu từng link nội bộ với file MDX hoặc `index.mdx` tương ứng. Chạy ví dụ
+ở mức có thể kiểm chứng. Nếu ví dụ phụ thuộc một Collector, backend, runtime
+hoặc file Compose chưa có trong repository, nói rõ dependency đó thay vì viết
+như thể nó đã được commit.
+
+</Step>
+</Steps>
+
+### Thêm một trang mới
+
+1. Chọn category đã tồn tại trong `content/docs/`. Dùng tên file chữ thường,
+   kebab-case, có phần mở rộng `.mdx`.
+2. Tạo frontmatter `title` và `description`. Viết phần nội dung không có H1,
+   rồi thêm `## Mục lục` với anchor của mọi `##` và `###`.
+3. Thêm slug bỏ `.mdx` vào đúng mảng `pages` trong `meta.json` của category.
+   Đặt slug ở vị trí phản ánh thứ tự học.
+4. Dùng route public có trailing slash khi link tới trang mới. Ví dụ,
+   `new-page.mdx` trong `getting-started` có route
+   `/getting-started/new-page/`.
+5. Không tạo thư mục `examples/`, `configs/` hay runtime project chỉ để chứa
+   một đoạn minh họa nếu repository chưa có quyết định tổ chức cho chúng.
+
+### Chạy các kiểm tra
+
+Các script này có trong `package.json` hiện tại:
+
+```bash
+npm run lint
+npm run types:check
+npm run build
+npm run preview
+```
+
+Ý nghĩa của từng lệnh:
+
+| Lệnh | Mục đích |
+| --- | --- |
+| `npm run lint` | Chạy ESLint cho source code. |
+| `npm run types:check` | Chạy `fumadocs-mdx`, Next typegen và TypeScript không phát sinh output. |
+| `npm run build` | Build Next.js static export vào `dist/`. |
+| `npm run start` | Phục vụ `dist/` bằng `serve`; cần build trước, giống `npm run preview`. |
+| `npm run preview` | Phục vụ `dist/` bằng `serve`; cần build trước. |
+
+Trong quá trình phát triển, `npm run dev` giúp xem nội dung nhanh. Trước khi
+mở pull request, chạy các kiểm tra phù hợp và ghi nhận lỗi nếu một kiểm tra
+không thể chạy trong môi trường hiện tại. Không sửa generated file để làm cho
+kiểm tra tạm thời qua.
+
+## Tệp được sinh tự động
+
+Các path sau không phải nơi viết source tài liệu:
+
+| Path | Nguồn sinh | Quy tắc |
+| --- | --- | --- |
+| `.source/` | `fumadocs-mdx`, được gọi bởi `postinstall` và `types:check` | Không sửa hoặc commit thủ công. |
+| `dist/` | `next build`, theo `distDir` trong `next.config.mjs` | Chỉ là static build output; không sửa để thay đổi docs. |
+| `.next/` | Next.js trong development/build | Cache và output nội bộ; không sửa. |
+
+`.gitignore` của repository đã bỏ qua `.source`, `dist/` và `.next/`. Nếu
+source collection lỗi, sửa MDX, `meta.json`, `source.config.ts` hoặc component
+nguồn tương ứng rồi chạy lại lệnh sinh. Những file sinh tự động có thể thay đổi
+sau mỗi lần cài hoặc build nên không dùng chúng làm nơi review nội dung.
+
+## Checklist review
+
+Trước khi gửi thay đổi tài liệu, tự kiểm tra:
+
+- [ ] File nằm đúng category dưới `content/docs/` và tên file là kebab-case.
+- [ ] Frontmatter có `title` và `description` rõ ràng.
+- [ ] Không có H1 viết bằng `#` trong body.
+- [ ] Có `## Mục lục` ngay sau phần mở đầu và mục lục chứa đủ mọi `##`/`###`.
+- [ ] Anchor trong mục lục khớp heading sau khi bỏ dấu câu.
+- [ ] Jargon được giải thích ở lần xuất hiện đầu tiên.
+- [ ] Link nội bộ trỏ tới route hoặc file thật, có trailing slash với route docs.
+- [ ] Nếu thêm trang, slug đã được thêm đúng `meta.json` và đúng thứ tự sidebar.
+- [ ] Component có syntax/import đúng; fenced code block có language tag phù hợp.
+- [ ] Không bịa file Compose, thư mục ví dụ, binding hoặc runtime chưa tồn tại.
+- [ ] Không sửa `.source/`, `dist/` hoặc `.next/`.
+- [ ] Đã chạy `npm run lint` và `npm run types:check`; nếu cần static export,
+      chạy thêm `npm run build` rồi `npm run preview`.

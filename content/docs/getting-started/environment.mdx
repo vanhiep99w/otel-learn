@@ -1,15 +1,318 @@
 ---
 title: "Chuẩn bị môi trường"
-description: "Toolchain, runtime và backend tối thiểu để thực hành."
+description: "Chuẩn bị công cụ để đọc website local và thực hành telemetry với OpenTelemetry."
 ---
 
-Trang này là **placeholder** cho chủ đề **Chuẩn bị môi trường**. Nội dung hướng dẫn, ví dụ và kiểm chứng sẽ được bổ sung sau.
+import { Step, Steps } from 'fumadocs-ui/components/steps';
 
-## Phạm vi dự kiến
+<Callout type="info" title="Không cần cài mọi runtime ngay từ đầu">
+  Để đọc tài liệu, bạn chỉ cần trình duyệt. Để chạy website này local, cần Git,
+  Node.js và npm. Docker, Docker Compose và cURL chỉ cần khi bạn dựng một stack
+  telemetry hoặc kiểm tra endpoint local. Chỉ cài thêm Python, Go, Java hay
+  runtime khác khi một bài thực hành cụ thể yêu cầu.
+</Callout>
 
-Toolchain, runtime và backend tối thiểu để thực hành.
+## Mục lục
 
-- Mental model và thuật ngữ cần biết.
-- Cấu hình hoặc ví dụ thực hành phù hợp.
-- Cách xác minh kết quả.
-- Failure modes, giới hạn và best practices.
+- [Mục tiêu và hai loại môi trường](#mục-tiêu-và-hai-loại-môi-trường)
+  - [Môi trường để đọc tài liệu](#môi-trường-để-đọc-tài-liệu)
+  - [Môi trường để thực hành telemetry](#môi-trường-để-thực-hành-telemetry)
+- [Bộ công cụ cần có](#bộ-công-cụ-cần-có)
+  - [Kiểm tra phiên bản](#kiểm-tra-phiên-bản)
+  - [Kiểm tra cổng mạng](#kiểm-tra-cổng-mạng)
+- [Chạy website tài liệu local](#chạy-website-tài-liệu-local)
+  - [Clone repository](#clone-repository)
+  - [Cài dependencies](#cài-dependencies)
+  - [Khởi động development server](#khởi-động-development-server)
+- [Checklist xác minh](#checklist-xác-minh)
+- [Troubleshooting](#troubleshooting)
+  - [Không cài được dependencies](#không-cài-được-dependencies)
+  - [Cổng 3000 đã được sử dụng](#cổng-3000-đã-được-sử-dụng)
+  - [Docker không kết nối](#docker-không-kết-nối)
+  - [Exporter không kết nối tới OTLP](#exporter-không-kết-nối-tới-otlp)
+  - [Trang 404 hoặc thiếu nội dung](#trang-404-hoặc-thiếu-nội-dung)
+- [Sau khi chuẩn bị xong](#sau-khi-chuẩn-bị-xong)
+
+## Mục tiêu và hai loại môi trường
+
+Có hai việc dễ bị trộn lẫn khi bắt đầu học OpenTelemetry (OTel). Một việc là
+đọc hoặc chỉnh sửa website tài liệu. Việc còn lại là chạy một ứng dụng có
+instrumentation (mã tạo telemetry) rồi gửi telemetry đến nơi thu thập.
+
+### Môi trường để đọc tài liệu
+
+Nếu chỉ đọc website đã deploy, không cần cài công cụ phát triển. Nếu muốn chạy
+bản sao local hoặc sửa một trang MDX, cần các công cụ sau:
+
+- **Git** để clone repository và chuyển giữa các commit.
+- **Node.js** để chạy Next.js và các công cụ Fumadocs.
+- **npm** để cài dependencies và chạy các script trong `package.json`.
+
+Repository này không khai báo trường `engines` trong `package.json`. Hãy dùng
+bản Node.js LTS đang được duy trì và npm đi kèm Node.js. Lệnh kiểm tra ở phần
+[Bộ công cụ cần có](#bộ-công-cụ-cần-có) giúp phát hiện môi trường trước khi cài.
+
+### Môi trường để thực hành telemetry
+
+Một bài thực hành telemetry thường có ba lớp:
+
+1. **Ứng dụng được instrument** tạo trace, metric hoặc log. SDK là thư viện
+   trong ngôn ngữ của ứng dụng, nên runtime của ngôn ngữ đó chỉ cần cài ở bước
+   này.
+2. **Collector hoặc backend local** nhận, xử lý và hiển thị telemetry. Docker
+   và Docker Compose giúp chạy các thành phần này mà không phải cài từng backend
+   trực tiếp trên máy.
+3. **Client kiểm tra**, thường là `curl`, để gọi ứng dụng và kiểm tra endpoint
+   HTTP.
+
+OTLP (OpenTelemetry Protocol) là giao thức OTel dùng để truyền telemetry.
+Hai cổng local thường gặp là `4317` cho OTLP/gRPC và `4318` cho OTLP/HTTP.
+Đây là cổng của collector hoặc endpoint nhận dữ liệu, không phải cổng website
+tài liệu. Cổng `3000` thường dành cho Next.js trong repository này.
+
+Repository hiện chưa có file Compose hay thư mục ví dụ ứng dụng trong cây
+nguồn. Vì vậy, không chạy `docker compose up` một cách mù quáng tại thư mục gốc.
+Khi học đến [Local observability stack](/getting-started/local-stack/), hãy dùng
+đúng file cấu hình mà bài đó cung cấp.
+
+## Bộ công cụ cần có
+
+### Kiểm tra phiên bản
+
+Chạy từng lệnh sau trong terminal. Dấu `$` chỉ là ký hiệu prompt, không nhập
+ký hiệu đó.
+
+```bash
+git --version
+node --version
+npm --version
+docker --version
+docker compose version
+curl --version
+```
+
+Kết quả cần đọc như sau:
+
+| Công cụ | Dùng để làm gì | Dấu hiệu cần có |
+| --- | --- | --- |
+| Git | Tải và quản lý source code | In ra phiên bản Git |
+| Node.js | Chạy Next.js, Fumadocs và TypeScript | In ra phiên bản `v...` |
+| npm | Cài package và gọi script | In ra phiên bản npm |
+| Docker Engine/Desktop | Chạy container | In ra phiên bản Docker |
+| Docker Compose | Khởi chạy nhiều container cùng nhau | In ra phiên bản Compose v2 |
+| cURL | Gọi HTTP để kiểm tra ứng dụng hoặc OTLP/HTTP | In ra thông tin phiên bản |
+
+`docker --version` chỉ kiểm tra client Docker. Để biết Docker daemon (dịch vụ
+nền thực sự chạy container) đã sẵn sàng, chạy thêm:
+
+```bash
+docker info
+```
+
+Nếu lệnh này báo không kết nối được daemon, hãy xem phần [Docker không kết
+nối](#docker-không-kết-nối). Không cần cài runtime ngôn ngữ khác chỉ để vượt
+qua checklist này.
+
+### Kiểm tra cổng mạng
+
+Bảng dưới đây là quy ước cổng trong các bước khởi đầu:
+
+| Cổng | Giao thức phổ biến | Thành phần thường lắng nghe |
+| --- | --- | --- |
+| `3000` | HTTP | Website Next.js local hoặc server preview |
+| `4317` | OTLP/gRPC | Collector nhận telemetry qua gRPC |
+| `4318` | OTLP/HTTP | Collector nhận telemetry qua HTTP |
+
+Các cổng này có thể không lắng nghe khi bạn chưa khởi động thành phần tương
+ứng. Trên Linux, kiểm tra cả ba cổng bằng:
+
+```bash
+ss -ltnp | grep -E ':(3000|4317|4318)([^0-9]|$)'
+```
+
+Trên macOS hoặc khi `ss` không có, dùng `lsof` cho từng cổng:
+
+```bash
+lsof -nP -iTCP:3000 -sTCP:LISTEN
+lsof -nP -iTCP:4317 -sTCP:LISTEN
+lsof -nP -iTCP:4318 -sTCP:LISTEN
+```
+
+Trên Windows PowerShell, dùng:
+
+```powershell
+Get-NetTCPConnection -State Listen -LocalPort 3000,4317,4318
+```
+
+Nếu không có dòng nào, cổng đang rảnh. Nếu có process khác, ghi lại PID và tên
+process trước khi dừng nó. Không dừng một service quan trọng chỉ vì nó dùng
+một trong các cổng trên. Bạn cũng có thể đổi cổng website bằng tham số của
+Next.js, ví dụ `npm run dev -- --port 3001`; khi đó phải mở đúng URL mới.
+
+<Callout type="warn" title="Cẩn thận khi đổi cổng">
+  Đổi cổng `3000` của website không tự động đổi endpoint OTLP. Một ứng dụng
+  vẫn có thể gửi đến `4317` hoặc `4318`. Hãy ghi rõ cả host và port trong cấu
+  hình exporter để tránh gửi nhầm dữ liệu.
+</Callout>
+
+## Chạy website tài liệu local
+
+Các lệnh dưới đây lấy trực tiếp từ scripts và cấu hình hiện có của repository.
+Website dùng Next.js static export; route gốc mở thẳng vào trang docs, không có
+landing page riêng.
+
+<Steps>
+<Step>
+
+### Clone repository
+
+Nếu chưa có source code, clone repository chính rồi đi vào thư mục dự án:
+
+```bash
+git clone https://github.com/vanhiep99w/otel-learn.git
+cd otel-learn
+```
+
+Nếu bạn đã ở trong `/home/hieptran/Desktop/otel-learn`, bỏ qua bước clone và
+chạy các lệnh còn lại tại thư mục đó.
+
+</Step>
+<Step>
+
+### Cài dependencies
+
+```bash
+npm install
+```
+
+`npm install` cũng kích hoạt script `postinstall`, trong đó chạy
+`fumadocs-mdx`. Bước này tạo dữ liệu source cần cho các trang MDX. Không sửa
+trực tiếp dữ liệu được sinh ra.
+
+</Step>
+<Step>
+
+### Khởi động development server
+
+```bash
+npm run dev
+```
+
+Mở [http://localhost:3000/](http://localhost:3000/). Khi sửa file trong `content/docs/`, Fumadocs sẽ
+xử lý lại nội dung để development server phản ánh thay đổi. Dừng server bằng
+`Ctrl+C`.
+
+</Step>
+</Steps>
+
+Nếu đã có bản build trong `dist/`, script `npm run preview` (cũng là
+`serve dist`) có thể phục vụ static site. Script này không thay thế bước build;
+đọc [quy ước repository](/getting-started/repository-conventions/) để biết
+file nào là source và file nào là generated.
+
+## Checklist xác minh
+
+Hoàn tất các mục phù hợp với mục tiêu của bạn:
+
+- [ ] `git --version`, `node --version` và `npm --version` chạy thành công.
+- [ ] `npm install` kết thúc không có lỗi dependency.
+- [ ] `npm run dev` khởi động được server mà không báo xung đột cổng.
+- [ ] `curl -I http://localhost:3000/` trả về response HTTP từ website.
+- [ ] `curl -I http://localhost:3000/getting-started/environment/` trả về trang
+      chuẩn bị môi trường với trailing slash.
+- [ ] Nếu thực hành local stack, `docker info` và `docker compose version` chạy
+      thành công.
+- [ ] Nếu thực hành OTLP, đã xác định process/container nào sở hữu `4317` hoặc
+      `4318` trước khi cấu hình exporter.
+- [ ] Bạn chưa cài runtime ngôn ngữ không cần thiết cho bài đang học.
+
+Lưu ý rằng một request HTTP thành công chỉ chứng minh endpoint có thể truy cập.
+Nó chưa chứng minh telemetry đã được Collector nhận và backend đã hiển thị.
+Việc xác minh trace đầu tiên thuộc về [Trace đầu tiên](/getting-started/first-trace/)
+khi nội dung bài đó được triển khai.
+
+## Troubleshooting
+
+### Không cài được dependencies
+
+Kiểm tra bạn đang đứng ở thư mục chứa `package.json`:
+
+```bash
+pwd
+ls package.json
+```
+
+Trên Windows PowerShell, lệnh tương đương để xem thư mục hiện tại là `Get-Location`.
+Sau đó chạy lại `node --version` và `npm --version`. Vì repository dùng Next.js
+16, nếu Node quá cũ, hãy chuyển sang Node.js LTS được hỗ trợ thay vì cố sửa
+`node_modules` bằng tay.
+
+Nếu lỗi là timeout hoặc không tải được package, kiểm tra mạng, proxy và registry
+npm của máy. Không đổi phiên bản package trong `package.json` chỉ để né một lỗi
+mạng tạm thời.
+
+### Cổng 3000 đã được sử dụng
+
+Thông báo `EADDRINUSE` nghĩa là process khác đang giữ cổng. Xác định process
+bằng lệnh kiểm tra cổng ở trên. Sau đó chọn một trong hai cách:
+
+- dừng process cũ nếu đó là server bạn không còn dùng; hoặc
+- chạy `npm run dev -- --port 3001` và mở [http://localhost:3001/](http://localhost:3001/).
+
+Nếu bạn đổi cổng, hãy dùng URL mới khi kiểm tra bằng `curl`. Không đổi endpoint
+OTLP chỉ vì website dùng cổng khác.
+
+### Docker không kết nối
+
+`docker --version` có thể chạy dù daemon chưa khởi động. Chạy:
+
+```bash
+docker info
+docker ps
+```
+
+Khởi động Docker Desktop hoặc Docker Engine, rồi thử lại. Nếu bài thực hành
+không cần container, bạn có thể tiếp tục học phần website mà không cần xử lý
+lỗi Docker ngay.
+
+### Exporter không kết nối tới OTLP
+
+Exporter là thành phần gửi telemetry từ ứng dụng hoặc Collector đến endpoint
+đích. Lỗi `connection refused` thường có nghĩa là không có process lắng nghe
+đúng host/port, hoặc port container chưa được publish ra host.
+
+Kiểm tra theo thứ tự:
+
+1. Thành phần nhận dữ liệu đã chạy chưa (`docker ps` nếu nó chạy trong container)?
+2. Host và port trong cấu hình có đúng `4317` cho gRPC hoặc `4318` cho HTTP không?
+3. Port đó có bị process khác chiếm không?
+4. Với OTLP/HTTP, host có trả lời không?
+
+```bash
+curl -i http://localhost:4318/
+```
+
+Status `404` hoặc `405` vẫn có thể chứng minh kết nối TCP/HTTP đã tới được
+server; endpoint gốc không nhất thiết là endpoint ingest. `curl` thông thường
+không phải công cụ phù hợp để kiểm tra gRPC trên `4317`. Hãy dùng health check
+của Collector hoặc gửi một request đúng định dạng ở bài thực hành.
+
+### Trang 404 hoặc thiếu nội dung
+
+Kiểm tra URL có trailing slash, ví dụ
+`/getting-started/environment/`, và server có chạy đúng repository không. Nếu
+vừa clone hoặc vừa cài package, chạy lại `npm install` để `postinstall` tạo
+source MDX. Khi sửa một trang mới, kiểm tra thêm slug của trang trong
+`content/docs/getting-started/meta.json` nếu muốn trang xuất hiện trong sidebar.
+
+Nếu trang có trong source nhưng route vẫn lỗi, chạy `npm run types:check` để
+Fumadocs tạo lại source và TypeScript báo vị trí lỗi. Đừng sửa file trong
+`.source/` để chữa lỗi này.
+
+## Sau khi chuẩn bị xong
+
+Khi website local mở được, hãy tiếp tục với [Trace đầu tiên](/getting-started/first-trace/)
+để nối ứng dụng với telemetry. Nếu muốn hiểu cách các thành phần phối hợp,
+đọc [Telemetry pipeline](/fundamentals/telemetry-pipeline/) trước. Khi cần dựng
+nhiều thành phần local, chuyển sang [Local observability stack](/getting-started/local-stack/)
+và chỉ cài runtime mà bài đó thực sự dùng.
