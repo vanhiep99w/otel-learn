@@ -222,7 +222,7 @@ public final class Telemetry implements AutoCloseable {
 
   public Telemetry(String endpoint) {
     Resource resource = Resource.getDefault().merge(Resource.create(
-        Attributes.of(ServiceAttributes.SERVICE_NAME, "checkout-java")));
+        Attributes.of(AttributeKey.stringKey("service.name"), "checkout-java")));
     OtlpGrpcSpanExporter exporter = OtlpGrpcSpanExporter.builder()
         .setEndpoint(endpoint).build();
     tracerProvider = SdkTracerProvider.builder()
@@ -246,10 +246,10 @@ public final class Telemetry implements AutoCloseable {
 ```
 
 `Resource` mô tả entity phát telemetry; `service.name` phải ổn định giữa replica.
-`BatchSpanProcessor` gom span trước khi export để giảm network overhead. Import
-`ServiceAttributes` từ semantic conventions artifact tương thích với BOM; nếu
-API semantic conventions đang thay đổi trong release của bạn, dùng key chuẩn
-`AttributeKey.stringKey("service.name")` thay vì API đã deprecated.
+`BatchSpanProcessor` gom span trước khi export để giảm network overhead. Ví dụ
+dùng `AttributeKey.stringKey("service.name")` nên chỉ cần các dependencies đã
+liệt kê. Trong codebase đã khóa version, bạn có thể thêm semantic conventions
+artifact tương thích với BOM và dùng constant do release đó cung cấp.
 
 Đăng `Telemetry` thành singleton Spring bean và để Spring gọi `close()`:
 
@@ -323,7 +323,7 @@ trợ. Với client custom, dùng `TextMapPropagator.inject`:
 ```java
 Context context = Context.current();
 openTelemetry.getPropagators().getTextMapPropagator().inject(
-    context, requestBuilder, (builder, key, value) -> builder.header(key, value));
+    context, requestBuilder, (builder, key, value) -> builder.setHeader(key, value));
 ```
 
 Phía nhận phải extract headers **trước** khi tạo server/consumer span và làm

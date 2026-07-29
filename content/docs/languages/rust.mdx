@@ -6,10 +6,11 @@ description: "Hướng dẫn instrument service Rust với Tokio, tracing-opente
 import { Step, Steps } from 'fumadocs-ui/components/steps';
 
 <Callout type="warn" title="Maturity cần đọc trước">
-  OpenTelemetry Rust chưa cam kết ổn định API ở mức `1.0`. Traces và metrics có
-  thể dùng trong production nhưng crate APIs vẫn có thể breaking giữa release.
-  Logs và nhiều integration trong ecosystem còn experimental hoặc incubating.
-  Hãy khóa dependency, đọc changelog và kiểm thử upgrade.
+  Core traces, metrics và logs của OpenTelemetry Rust đang ở mức **Beta** và các
+  crate vẫn pre-1.0. Chúng có thể dùng sau khi đánh giá production, nhưng API vẫn
+  có thể breaking giữa release. Mỗi bridge/framework integration có maturity
+  riêng và một số vẫn experimental. Hãy khóa dependency, đọc changelog và kiểm
+  thử upgrade.
 </Callout>
 
 ## Mục lục
@@ -322,21 +323,22 @@ dụng, không coi nó là stable chỉ vì tên có “otel”.
 
 ## Metrics và logs
 
-Metrics SDK trong OpenTelemetry Rust có thể dùng nhưng crate API vẫn pre-1.0.
-OTLP metrics cần feature phù hợp, `SdkMeterProvider`, periodic reader và shutdown
-riêng. Hãy triển khai sau traces với một counter/histogram ít cardinality. Ví dụ,
-`checkout.duration` có `result`, không có `user_id`.
+Core metrics và logs của OpenTelemetry Rust đang ở mức Beta, đồng thời crate API
+vẫn pre-1.0. OTLP metrics cần feature phù hợp, `SdkMeterProvider`, periodic
+reader và shutdown riêng. Hãy triển khai sau traces với một counter/histogram ít
+cardinality. Ví dụ, `checkout.duration` có `result`, không có `user_id`.
 
-OpenTelemetry logs SDK và OTLP log exporter cần được xem là experimental theo
-trạng thái crate/release bạn dùng. `tracing` events cũng không tự động trở thành
-OTel log records chỉ vì OTel tracing layer đã được cài. Có ba lựa chọn rõ ràng:
+Logs Beta không có nghĩa mọi bridge đều cùng mức trưởng thành. `tracing` events
+cũng không tự động trở thành OTel log records chỉ vì OTel tracing layer đã được
+cài. Kiểm tra status của bridge/exporter trong release đã khóa. Có ba lựa chọn
+rõ ràng:
 
 - giữ `tracing-subscriber` fmt/JSON layer cho log pipeline hiện có;
 - thêm trace/span IDs vào structured logs bằng layer hỗ trợ correlation;
 - thử OTel logs bridge trong một rollout riêng và chấp nhận API churn.
 
-Không quảng bá logs bridge thử nghiệm thành contract stable. Không gửi cùng log
-qua hai layer nếu điều đó tạo duplicate.
+Không quảng bá một logs bridge Beta hoặc experimental thành contract stable.
+Không gửi cùng log qua hai layer nếu điều đó tạo duplicate.
 
 ## Xác minh bằng Collector
 

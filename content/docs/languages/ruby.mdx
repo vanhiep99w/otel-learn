@@ -6,9 +6,10 @@ description: "Hướng dẫn instrument Ruby, Rails và background job bằng OT
 import { Step, Steps } from 'fumadocs-ui/components/steps';
 
 <Callout type="info" title="Phạm vi và trạng thái">
-  OpenTelemetry Ruby hỗ trợ **traces** và **metrics** ở mức stable. Logs signal
-  chưa có SDK logs hoàn chỉnh như traces. Trong production, hãy correlation log
-  hiện có bằng `trace_id` và `span_id`, rồi để log pipeline vận chuyển log.
+  OpenTelemetry Ruby có **traces** ở mức stable. Metrics vẫn ở giai đoạn
+  development/alpha và có thể có breaking changes; logs cũng đang development.
+  Trong production, hãy correlation log hiện có bằng `trace_id` và `span_id`,
+  rồi để log pipeline vận chuyển log.
 </Callout>
 
 ## Mục lục
@@ -271,13 +272,13 @@ Không dùng một biến global để giữ active span.
 
 ## Metrics và logs
 
-Ruby metrics SDK là stable, nhưng instrumentation coverage không đồng đều giữa
-các framework. Bắt đầu bằng metric nghiệp vụ ít cardinality. Ví dụ, counter
-`orders.created` có attribute `result=success|failure`, không có `order.id`.
-Exporter và reader APIs có thể thay đổi giữa các dòng gem, nên dùng tài liệu API
-đúng phiên bản lockfile khi cấu hình metrics thủ công.
+Ruby metrics SDK vẫn ở giai đoạn development/alpha. Nó nằm trong gem riêng và
+API có thể thay đổi giữa các release. Nếu chấp nhận rủi ro đó, hãy bắt đầu bằng
+metric nghiệp vụ ít cardinality. Ví dụ, counter `orders.created` có attribute
+`result=success|failure`, không có `order.id`. Dùng tài liệu API đúng phiên bản
+trong lockfile và kiểm thử exporter/reader trước mỗi lần nâng cấp.
 
-Logs signal của Ruby chưa nên được trình bày như một SDK logs stable hoàn chỉnh.
+Logs signal của Ruby cũng đang development, chưa phải một SDK logs stable hoàn chỉnh.
 Giữ logger hiện có và thêm trace correlation:
 
 ```ruby
@@ -328,8 +329,11 @@ kiểm tra:
 4. Export tới `/v1/traces` thành công.
 5. Không có authorization header hoặc request body nhạy cảm trong attributes.
 
-Nếu dùng OTLP/gRPC, endpoint thường là port `4317` và protocol là `grpc`. Không
-trộn port/protocol. Với OTLP/HTTP base endpoint, exporter tự thêm `/v1/traces`.
+Gem `opentelemetry-exporter-otlp` trong ví dụ dùng OTLP/HTTP với protocol
+`http/protobuf`; endpoint local tương ứng là port `4318`. Không đổi riêng biến
+protocol sang `grpc`: chỉ dùng gRPC khi đã chọn một exporter hoặc distribution
+Ruby tuyên bố hỗ trợ nó. Với OTLP/HTTP base endpoint, exporter tự thêm
+`/v1/traces`.
 
 ## Shutdown flush và worker dài hạn
 

@@ -6,11 +6,11 @@ description: "Instrument ứng dụng PHP bằng OpenTelemetry: auto-instrumenta
 import { Step, Steps } from 'fumadocs-ui/components/steps';
 
 <Callout type="info" title="Phạm vi và mức trưởng thành">
-  Bài này ưu tiên **traces**, signal có đường triển khai PHP phổ biến nhất. PHP
-  SDK có API cho traces, metrics và logs, nhưng mức ổn định, auto-instrumentation
-  và framework coverage thay đổi theo package. Hãy kiểm tra Packagist, registry
-  và README của integration tại thời điểm pin dependency; đừng suy ra rằng cả
-  ba signals đều production-ready chỉ vì SDK có namespace tương ứng.
+  Core API/SDK cho **traces**, **metrics** và **logs** của OpenTelemetry PHP đã
+  được công bố stable. Bài này vẫn ưu tiên traces vì auto-instrumentation và
+  framework coverage của signal này phổ biến hơn. Exporter, bridge và từng
+  integration có maturity riêng; hãy kiểm tra README và release đã pin thay vì
+  suy trạng thái của chúng từ core SDK.
 </Callout>
 
 ## Mục lục
@@ -48,7 +48,6 @@ exporter và dependencies transport qua Composer.
 | --- | --- |
 | Phủ nhanh Slim/Symfony/Laravel hoặc HTTP client được hỗ trợ | Extension + package auto tương ứng |
 | Thấy bước nghiệp vụ như `order.price` | Manual span, thường đặt bên trong auto server span |
-| PHP 7.4 legacy | Manual có thể dùng theo compatibility của package; auto extension yêu cầu PHP 8+ |
 | Kiểm soát provider/processor hoàn toàn | Bootstrap SDK thủ công |
 
 Ví dụ dưới đây dùng auto bootstrap để có server span và thêm một manual child
@@ -93,14 +92,17 @@ composer require \
   slim/slim slim/psr7 \
   open-telemetry/sdk \
   open-telemetry/exporter-otlp \
-  open-telemetry/opentelemetry-auto-slim
+  open-telemetry/opentelemetry-auto-slim \
+  php-http/guzzle7-adapter
 ```
 
-OTLP exporter cần một transport HTTP/gRPC tương thích và có thể cần PSR HTTP
-client/discovery packages tùy dependency graph hiện hành. Chạy `composer check-platform-reqs`
-và làm theo lỗi Composer thay vì đoán extension. Với image production, build
-extension và `composer install` ở CI, pin `composer.lock`, không chạy PECL lúc
-container start.
+Đường OTLP/HTTP trong ví dụ cần một PSR-18 client implementation;
+`php-http/guzzle7-adapter` cung cấp implementation đó. Package discovery đơn
+thuần không thay thế HTTP client. Nếu chọn transport khác, dùng dependency mà
+exporter tương ứng yêu cầu. Chạy `composer check-platform-reqs` và xử lý lỗi
+Composer thay vì đoán extension. Với image production, build extension và
+`composer install` ở CI, pin `composer.lock`, không chạy PECL lúc container
+start.
 
 </Step>
 <Step>
@@ -217,9 +219,10 @@ storage global sai sẽ làm context của request đồng thời rò sang nhau.
 
 ## Metrics và logs
 
-OpenTelemetry PHP có implementation cho metrics và logs, nhưng bạn cần kiểm tra
-status của API/SDK/exporter và integration cụ thể trước khi cam kết production.
-Không mặc định rằng cài auto Slim sẽ tạo metrics hoặc logs hữu ích.
+Core API/SDK cho metrics và logs của OpenTelemetry PHP đã stable. Tuy vậy,
+exporter, logger bridge và framework integration vẫn có release cadence và
+coverage riêng. Không mặc định rằng cài auto Slim sẽ tạo metrics hoặc logs hữu
+ích.
 
 Nếu bật metrics:
 

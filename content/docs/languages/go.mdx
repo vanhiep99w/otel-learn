@@ -5,9 +5,9 @@ description: "Instrument một HTTP service Go bằng SDK, otelhttp, OTLP, conte
 
 <Callout type="info" title="Kết quả sau bài này">
   Bạn sẽ xây một service `net/http` gần như chạy được, tạo HTTP và business spans,
-  xuất OTLP/gRPC tới Collector, truyền `context.Context`, thêm metric tối thiểu và
-  kiểm thử không cần backend. Các lệnh cài đặt không ghim version; production phải
-  commit `go.mod` và `go.sum` sau khi chọn release tương thích.
+  xuất OTLP/gRPC tới Collector, truyền `context.Context`, hiểu cách bổ sung metric
+  và kiểm thử không cần backend. Các lệnh cài đặt không ghim version; production
+  phải commit `go.mod` và `go.sum` sau khi chọn release tương thích.
 </Callout>
 
 ## Mục lục
@@ -229,21 +229,30 @@ func run() error {
     serverErr <- server.ListenAndServe()
   }()
 
+  var runErr error
   select {
   case <-root.Done():
   case err := <-serverErr:
-    if err != nil && !errors.Is(err, http.ErrServerClosed) { return err }
+    if err != nil && !errors.Is(err, http.ErrServerClosed) {
+      runErr = fmt.Errorf("serve HTTP: %w", err)
+    }
   }
 
-  shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-  defer cancel()
-  if err := server.Shutdown(shutdownCtx); err != nil {
-    log.Printf("HTTP shutdown: %v", err)
+  httpCtx, cancelHTTP := context.WithTimeout(context.Background(), 8*time.Second)
+  if err := server.Shutdown(httpCtx); err != nil {
+    runErr = errors.Join(runErr, fmt.Errorf("HTTP shutdown: %w", err))
+    if closeErr := server.Close(); closeErr != nil && !errors.Is(closeErr, http.ErrServerClosed) {
+      runErr = errors.Join(runErr, fmt.Errorf("force close HTTP: %w", closeErr))
+    }
   }
-  if err := tp.Shutdown(shutdownCtx); err != nil {
-    return fmt.Errorf("tracer provider shutdown: %w", err)
+  cancelHTTP()
+
+  telemetryCtx, cancelTelemetry := context.WithTimeout(context.Background(), 2*time.Second)
+  if err := tp.Shutdown(telemetryCtx); err != nil {
+    runErr = errors.Join(runErr, fmt.Errorf("tracer provider shutdown: %w", err))
   }
-  return nil
+  cancelTelemetry()
+  return runErr
 }
 
 func main() {
