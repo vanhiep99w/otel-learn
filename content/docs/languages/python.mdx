@@ -1,15 +1,209 @@
 ---
 title: "Python"
-description: "Instrumentation cho Python application và framework phổ biến."
+description: "Instrument ứng dụng Python bằng distro/CLI hoặc SDK thủ công, với Flask, context propagation và OTLP."
 ---
 
-Trang này là **placeholder** cho chủ đề **Python**. Nội dung hướng dẫn, ví dụ và kiểm chứng sẽ được bổ sung sau.
+<Callout type="info" title="Lộ trình khuyến nghị">
+  Dùng `opentelemetry-distro` và `opentelemetry-instrument` để kiểm chứng nhanh framework coverage. Chuyển sang SDK thủ công khi cần kiểm soát provider, processor, resource hoặc lifecycle bằng code.
+</Callout>
 
-## Phạm vi dự kiến
+## Mục lục
 
-Instrumentation cho Python application và framework phổ biến.
+- [Chọn zero-code hay manual](#chọn-zero-code-hay-manual)
+- [Cách một: distro và CLI](#cách-một-distro-và-cli)
+- [Cách hai: SDK thủ công](#cách-hai-sdk-thủ-công)
+  - [Cài dependencies](#cài-dependencies)
+  - [Khởi tạo provider và exporter](#khởi-tạo-provider-và-exporter)
+- [Service Flask hoàn chỉnh](#service-flask-hoàn-chỉnh)
+- [Context propagation qua task và thread](#context-propagation-qua-task-và-thread)
+- [Metrics và logs](#metrics-và-logs)
+- [Cấu hình OTLP và xác minh](#cấu-hình-otlp-và-xác-minh)
+- [Shutdown và flush](#shutdown-và-flush)
+- [Kiểm thử](#kiểm-thử)
+- [Lỗi thường gặp](#lỗi-thường-gặp)
+- [Thực hành production](#thực-hành-production)
+- [Bước tiếp theo](#bước-tiếp-theo)
 
-- Mental model và thuật ngữ cần biết.
-- Cấu hình hoặc ví dụ thực hành phù hợp.
-- Cách xác minh kết quả.
-- Failure modes, giới hạn và best practices.
+## Chọn zero-code hay manual
+
+**Zero-code instrumentation** dùng CLI để phát hiện và patch các library được hỗ trợ mà không sửa business code. Nó phù hợp với Flask/FastAPI, HTTP clients và database drivers phổ biến. **Manual instrumentation** dùng OpenTelemetry API cho business operation và SDK cho export pipeline.
+
+Không khởi tạo SDK thủ công đồng thời với CLI trong cùng process. Hai provider/instrumentor owners có thể tạo duplicate spans. Một mô hình thực tế là CLI sở hữu SDK, còn application chỉ gọi API `trace.get_tracer()` và `metrics.get_meter()`.
+
+## Cách một: distro và CLI
+
+```bash
+python -m venv .venv
+. .venv/bin/activate
+pip install flask opentelemetry-distro opentelemetry-exporter-otlp
+opentelemetry-bootstrap -a install
+```
+
+`opentelemetry-bootstrap` kiểm tra packages đang cài và cài instrumentation tương ứng. Review thay đổi dependency rồi lock chúng bằng công cụ của dự án. Chạy app qua launcher:
+
+```bash
+export OTEL_SERVICE_NAME=python-orders
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
+export OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
+export OTEL_TRACES_EXPORTER=otlp
+export OTEL_METRICS_EXPORTER=otlp
+opentelemetry-instrument flask --app app run --port 5000
+```
+
+CLI và biến môi trường là đường nhanh nhất để thử. Coverage cụ thể phụ thuộc phiên bản framework và instrumentation package; kiểm tra compatibility trong repository `opentelemetry-python-contrib`.
+
+## Cách hai: SDK thủ công
+
+### Cài dependencies
+
+```bash
+pip install flask opentelemetry-api opentelemetry-sdk opentelemetry-exporter-otlp-proto-http opentelemetry-instrumentation-flask
+```
+
+### Khởi tạo provider và exporter
+
+```python
+# telemetry.py
+from opentelemetry import metrics, trace
+from opentelemetry.exporter.otlp.proto.http.metric_exporter import OTLPMetricExporter
+from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+from opentelemetry.sdk.metrics import MeterProvider
+from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
+from opentelemetry.sdk.resources import Resource
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import BatchSpanProcessor
+
+resource = Resource.create({"service.name": "python-orders"})
+tracer_provider = TracerProvider(resource=resource)
+tracer_provider.add_span_processor(BatchSpanProcessor(OTLPSpanExporter()))
+trace.set_tracer_provider(tracer_provider)
+
+metric_reader = PeriodicExportingMetricReader(OTLPMetricExporter())
+meter_provider = MeterProvider(resource=resource, metric_readers=[metric_reader])
+metrics.set_meter_provider(meter_provider)
+
+
+def shutdown_telemetry():
+    meter_provider.shutdown()
+    tracer_provider.shutdown()
+```
+
+Provider là implementation SDK đứng sau API. `BatchSpanProcessor` gom spans ngoài request path. Metric reader thu và export metric theo chu kỳ. Exporters đọc endpoint, headers và protocol từ biến môi trường chuẩn.
+
+<Callout type="warn" title="Khởi tạo đúng một lần">
+  Import `telemetry.py` từ entrypoint trước khi tạo app hoặc instrument framework. Với Gunicorn preload/fork, khởi tạo SDK trong worker theo lifecycle của deployment; không chia sẻ background exporter thread được tạo trước fork.
+</Callout>
+
+## Service Flask hoàn chỉnh
+
+```python
+# app.py
+import atexit
+import time
+from flask import Flask, jsonify
+from opentelemetry import metrics, trace
+from opentelemetry.instrumentation.flask import FlaskInstrumentor
+from opentelemetry.trace import Status, StatusCode
+
+from telemetry import shutdown_telemetry
+
+app = Flask(__name__)
+FlaskInstrumentor().instrument_app(app)
+tracer = trace.get_tracer("orders", "1.0.0")
+meter = metrics.get_meter("orders", "1.0.0")
+orders_created = meter.create_counter("orders.created", unit="{order}")
+
+@app.get("/orders/<order_id>")
+def get_order(order_id: str):
+    with tracer.start_as_current_span("orders.load") as span:
+        try:
+            time.sleep(0.02)
+            span.set_attribute("order.found", True)
+            orders_created.add(1, {"order.channel": "http"})
+            return jsonify(id=order_id, status="ready")
+        except Exception as exc:
+            span.record_exception(exc)
+            span.set_status(Status(StatusCode.ERROR))
+            raise
+
+atexit.register(shutdown_telemetry)
+```
+
+Flask instrumentation tạo server span và extract incoming `traceparent`. Context manager `start_as_current_span` làm `orders.load` thành active child span rồi end nó kể cả khi exception xảy ra. Không ghi `order_id` vào metric attributes vì mỗi ID tạo một time series mới.
+
+Nếu dùng CLI, bỏ `FlaskInstrumentor().instrument_app(app)` và import `telemetry`; CLI đã sở hữu hai việc đó. Business API calls vẫn giữ nguyên.
+
+## Context propagation qua task và thread
+
+Python lưu active context bằng `contextvars`. Nó truyền tự nhiên qua phần lớn `asyncio` tasks được tạo trong current context, nhưng không nên giả định mọi executor, thread pool hoặc queue giữ context.
+
+Khi tạo thread thủ công, copy context tại thời điểm submit:
+
+```python
+from contextvars import copy_context
+from concurrent.futures import ThreadPoolExecutor
+
+pool = ThreadPoolExecutor(max_workers=4)
+future = pool.submit(copy_context().run, lambda: do_work())
+```
+
+Với message broker hoặc protocol riêng, dùng propagator global để `inject(carrier)` khi gửi và `extract(carrier)` khi nhận. Sau extract, attach context trong scope xử lý rồi detach bằng token trong `finally`. Không serialize đối tượng Context; chỉ truyền carrier dạng key/value, thường chứa W3C `traceparent` và `tracestate`.
+
+## Metrics và logs
+
+Metrics SDK hỗ trợ counter, histogram và observable instruments. Chọn attributes hữu hạn như route template, method hoặc result; tránh user ID và URL raw. Views và temporality support có thể phụ thuộc exporter/backend, vì vậy xác minh query thực tế.
+
+OpenTelemetry Logs cho Python và các logging integrations tiếp tục phát triển theo package. Với stdlib `logging`, dùng instrumentation/handler chính thức phù hợp phiên bản để correlate record với active trace. Phân biệt **log correlation** (thêm trace/span ID vào log hiện có) với **log export** (SDK gửi log qua OTLP). Kiểm tra trạng thái ổn định của logs API/SDK và instrumentation trước khi chọn pipeline production.
+
+## Cấu hình OTLP và xác minh
+
+```bash
+export OTEL_SERVICE_NAME=python-orders
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
+export OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
+export OTEL_RESOURCE_ATTRIBUTES=deployment.environment.name=dev
+flask --app app run --port 5000
+curl http://localhost:5000/orders/42
+```
+
+Nếu exporter package chỉ dành cho OTLP/HTTP như ví dụ thủ công, protocol phải khớp HTTP và Collector thường nghe cổng 4318. Backend phải hiển thị server span Flask, child `orders.load` cùng trace ID và metric `orders.created` sau export interval. Dùng Collector debug exporter tạm thời để quan sát record trước backend.
+
+## Shutdown và flush
+
+`shutdown()` flush pending spans/metrics và dừng worker threads. `atexit` hữu ích cho process thoát bình thường, nhưng orchestrator cần gửi SIGTERM và cho worker đủ grace period. Với Gunicorn/uWSGI, nối shutdown vào worker lifecycle hook. Không chỉ dựa vào `atexit` khi process có thể bị SIGKILL.
+
+Trong server thực, thứ tự nên là: ngừng nhận request, chờ in-flight request có giới hạn, shutdown telemetry, rồi thoát. Telemetry failure phải được log nhưng không được kéo dài shutdown vô hạn.
+
+## Kiểm thử
+
+Unit test dùng `InMemorySpanExporter` và `SimpleSpanProcessor` trên provider riêng. Gọi Flask test client, force flush, rồi assert có `orders.load`, parent hợp lệ, status và attributes mong muốn. Dọn provider/instrumentor giữa tests để tránh global state và duplicate patching.
+
+Integration test nên chạy Collector container và dùng OTLP receiver thật. Gửi request có `traceparent` cố định, rồi kiểm tra server span tiếp tục trace đó. Test thêm exception và shutdown để phát hiện span bị thiếu do batch chưa flush.
+
+## Lỗi thường gặp
+
+| Triệu chứng | Nguyên nhân thường gặp | Cách xử lý |
+| --- | --- | --- |
+| `ModuleNotFoundError` instrumentation | Chưa chạy bootstrap hoặc sai virtualenv | Activate env, chạy bootstrap, kiểm tra `pip freeze` |
+| Duplicate server spans | CLI và `instrument_app` cùng patch Flask | Chỉ giữ một instrumentation owner |
+| Export trả 404/connection error | Sai signal path, protocol hoặc cổng | Dùng endpoint tổng quát đúng exporter; kiểm tra 4318/HTTP và 4317/gRPC |
+| Child span thành root | Context mất qua thread/queue | Copy context hoặc inject/extract carrier |
+| Không thấy metric ngay | Periodic reader chưa đến interval | Chờ hữu hạn hoặc force flush trong test |
+| Worker treo khi thoát | Exporter thread không shutdown | Gắn shutdown vào worker lifecycle |
+| Dữ liệu chỉ xuất ở một worker | SDK tạo trước fork | Khởi tạo provider/exporter sau fork |
+
+Bật diagnostic logging tạm thời khi điều tra, nhưng không để debug logs lâu dài vì có thể lớn và lộ endpoint metadata.
+
+## Thực hành production
+
+Lock dependency và kiểm tra tương thích giữa Python, framework, instrumentation và SDK. Dùng BatchSpanProcessor, sampling và Collector để giữ overhead có giới hạn. Đặt timeout export; ứng dụng phải tiếp tục phục vụ khi Collector tạm mất.
+
+Chuẩn hóa resource attributes giữa workers. Redact headers, query strings, SQL và exception data theo policy. Load test cả lúc Collector khỏe và mất kết nối. Traces/metrics APIs chính là lựa chọn ổn định; auto-instrumentation coverage và logs phụ thuộc package/version nên cần kiểm chứng trước mỗi upgrade.
+
+## Bước tiếp theo
+
+<Cards>
+  <Card title="Propagation" href="/instrumentation/propagators/" description="Truyền context qua HTTP, queue và custom carrier." />
+  <Card title="Manual instrumentation" href="/instrumentation/manual-instrumentation/" description="Thiết kế business spans, metrics và correlated logs." />
+  <Card title="Collector" href="/collector/" description="Nhận và định tuyến OTLP trong production." />
+</Cards>

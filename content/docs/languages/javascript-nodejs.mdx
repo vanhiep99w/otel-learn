@@ -1,15 +1,193 @@
 ---
 title: "JavaScript và Node.js"
-description: "Instrumentation cho Node.js, web server và async context."
+description: "Thiết lập OpenTelemetry cho Node.js với auto-instrumentation, manual spans, OTLP và lifecycle an toàn."
 ---
 
-Trang này là **placeholder** cho chủ đề **JavaScript và Node.js**. Nội dung hướng dẫn, ví dụ và kiểm chứng sẽ được bổ sung sau.
+<Callout type="warn" title="Khởi tạo trước application imports">
+  Instrumentation phải patch module trước khi HTTP, Express hoặc database library được import. Hãy nạp file SDK bằng `--require`/`--import`, hoặc import nó ở dòng đầu entrypoint.
+</Callout>
 
-## Phạm vi dự kiến
+## Mục lục
 
-Instrumentation cho Node.js, web server và async context.
+- [Chọn auto hay manual](#chọn-auto-hay-manual)
+- [Cài dependencies](#cài-dependencies)
+- [Cấu hình SDK và OTLP](#cấu-hình-sdk-và-otlp)
+  - [Khởi tạo NodeSDK](#khởi-tạo-nodesdk)
+  - [CommonJS và ESM](#commonjs-và-esm)
+- [Service HTTP và Express](#service-http-và-express)
+- [Context propagation và async](#context-propagation-và-async)
+- [Metrics và logs](#metrics-và-logs)
+- [Chạy và xác minh](#chạy-và-xác-minh)
+- [Shutdown và flush](#shutdown-và-flush)
+- [Kiểm thử](#kiểm-thử)
+- [Lỗi thường gặp](#lỗi-thường-gặp)
+- [Thực hành production](#thực-hành-production)
+- [Bước tiếp theo](#bước-tiếp-theo)
 
-- Mental model và thuật ngữ cần biết.
-- Cấu hình hoặc ví dụ thực hành phù hợp.
-- Cách xác minh kết quả.
-- Failure modes, giới hạn và best practices.
+## Chọn auto hay manual
+
+`@opentelemetry/auto-instrumentations-node` gom instrumentation cho các module Node.js phổ biến. Dùng nó để tạo HTTP, Express và client spans mà không bọc từng handler. Manual API phù hợp với operation nghiệp vụ mà framework không biết, chẳng hạn `orders.validate`.
+
+Zero-code launcher của hệ sinh thái tiện cho thử nghiệm. Cấu hình `NodeSDK` trong một file riêng phù hợp hơn khi cần chọn instrumentation, resource, sampler hoặc exporter bằng code. Một service có thể dùng cả hai, nhưng chỉ nên có một SDK/provider owner.
+
+## Cài dependencies
+
+```bash
+npm install express @opentelemetry/api @opentelemetry/sdk-node @opentelemetry/auto-instrumentations-node @opentelemetry/exporter-trace-otlp-proto @opentelemetry/exporter-metrics-otlp-proto @opentelemetry/resources @opentelemetry/semantic-conventions
+```
+
+Ví dụ dùng JavaScript CommonJS để giảm cấu hình build. Tạo hai file `instrumentation.cjs` và `app.cjs`.
+
+## Cấu hình SDK và OTLP
+
+### Khởi tạo NodeSDK
+
+```js
+// instrumentation.cjs
+const { NodeSDK } = require('@opentelemetry/sdk-node');
+const { getNodeAutoInstrumentations } = require('@opentelemetry/auto-instrumentations-node');
+const { OTLPTraceExporter } = require('@opentelemetry/exporter-trace-otlp-proto');
+const { OTLPMetricExporter } = require('@opentelemetry/exporter-metrics-otlp-proto');
+const { PeriodicExportingMetricReader } = require('@opentelemetry/sdk-metrics');
+const { resourceFromAttributes } = require('@opentelemetry/resources');
+const { ATTR_SERVICE_NAME } = require('@opentelemetry/semantic-conventions');
+
+const sdk = new NodeSDK({
+  resource: resourceFromAttributes({ [ATTR_SERVICE_NAME]: 'node-orders' }),
+  traceExporter: new OTLPTraceExporter(),
+  metricReader: new PeriodicExportingMetricReader({
+    exporter: new OTLPMetricExporter(),
+    exportIntervalMillis: 10_000,
+  }),
+  instrumentations: [getNodeAutoInstrumentations()],
+});
+
+sdk.start();
+module.exports = { sdk };
+```
+
+`NodeSDK` tạo TracerProvider/MeterProvider, processors/readers và đăng ký chúng làm global providers. Resource mô tả thực thể phát telemetry; tối thiểu cần một `service.name` ổn định. Exporter đọc OTLP endpoint từ biến môi trường.
+
+### CommonJS và ESM
+
+CommonJS có thể preload bằng:
+
+```bash
+node --require ./instrumentation.cjs app.cjs
+```
+
+Với ESM, dùng bootstrap ESM và cơ chế `--import` được phiên bản Node đang chạy hỗ trợ. Khả năng hook module ESM phụ thuộc Node, loader và instrumentation package. Luôn kiểm tra compatibility matrix chính thức; nếu một ESM package được import trước SDK, patching có thể không xảy ra.
+
+<Callout type="info" title="Thứ tự import là một phần cấu hình">
+  Đừng import `app` từ cuối file SDK rồi đồng thời preload file đó ở test khác. Giữ bootstrap chỉ làm telemetry, và để Node nạp entrypoint sau khi bootstrap hoàn tất.
+</Callout>
+
+## Service HTTP và Express
+
+```js
+// app.cjs
+const express = require('express');
+const { trace, metrics, SpanStatusCode } = require('@opentelemetry/api');
+
+const app = express();
+const tracer = trace.getTracer('orders', '1.0.0');
+const meter = metrics.getMeter('orders', '1.0.0');
+const orders = meter.createCounter('orders.created', { unit: '{order}' });
+
+app.get('/orders/:id', async (req, res) => {
+  await tracer.startActiveSpan('orders.load', async (span) => {
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      span.setAttribute('order.found', true);
+      orders.add(1, { 'order.channel': 'http' });
+      res.json({ id: req.params.id, status: 'ready' });
+    } catch (error) {
+      span.recordException(error);
+      span.setStatus({ code: SpanStatusCode.ERROR });
+      res.status(500).json({ error: 'internal' });
+    } finally {
+      span.end();
+    }
+  });
+});
+
+app.listen(3000, () => console.log('listening on :3000'));
+```
+
+Auto-instrumentation sở hữu server span cho route. `orders.load` là child business span vì `startActiveSpan` đưa span vào active context trong callback. Không dùng `req.params.id` làm metric attribute: giá trị gần như vô hạn sẽ tạo cardinality cao.
+
+## Context propagation và async
+
+Node SDK dùng context manager dựa trên `AsyncLocalStorage` để giữ active context qua Promise, timer và phần lớn callback chuẩn. Instrumentation HTTP tự inject header W3C Trace Context (`traceparent`) khi gọi outbound HTTP và extract nó ở server nhận.
+
+Detached work, worker threads và custom queues là boundary cần xử lý rõ. Với queue, inject context vào message metadata lúc publish và extract lúc consume. Với worker thread, truyền carrier đã serialize; đừng truyền đối tượng `Context` trực tiếp. Nếu callback library làm mất context, capture context bằng `context.active()` và chạy callback qua `context.with(captured, fn)`.
+
+## Metrics và logs
+
+Metrics API hiện ổn định trong JS SDK. Dùng counter cho số lần, histogram cho phân bố latency/size và observable gauge cho giá trị được quan sát. `PeriodicExportingMetricReader` ở trên export định kỳ; production nên điều chỉnh interval và views theo backend.
+
+Logs SDK và auto log instrumentation có trạng thái/coverage thay đổi theo package. Nếu chưa dùng OpenTelemetry Logs, tiếp tục ghi structured logs bằng Pino/Winston và cấu hình integration chính thức để thêm `trace_id`/`span_id`. Không tự đọc private SDK fields. Xác nhận trạng thái package trước khi đưa log pipeline vào production.
+
+## Chạy và xác minh
+
+```bash
+export OTEL_SERVICE_NAME=node-orders
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
+export OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
+export OTEL_RESOURCE_ATTRIBUTES=deployment.environment.name=dev
+node --require ./instrumentation.cjs app.cjs
+curl http://localhost:3000/orders/42
+```
+
+Trong backend, tìm service `node-orders`. Một request phải có HTTP server span và child `orders.load`; metric `orders.created` xuất hiện sau export interval. Nếu dùng Collector, bật debug exporter tạm thời để phân biệt lỗi receiver với lỗi backend.
+
+## Shutdown và flush
+
+Đăng ký shutdown ở entrypoint sở hữu process, không ở library:
+
+```js
+const { sdk } = require('./instrumentation.cjs');
+let stopping = false;
+async function stop(signal) {
+  if (stopping) return;
+  stopping = true;
+  try { await sdk.shutdown(); }
+  catch (err) { console.error('otel shutdown failed', { signal, err }); }
+  finally { process.exit(0); }
+}
+process.once('SIGTERM', () => void stop('SIGTERM'));
+process.once('SIGINT', () => void stop('SIGINT'));
+```
+
+Trong ứng dụng thực, đóng HTTP server và ngừng nhận request trước, rồi gọi `sdk.shutdown()` với deadline của orchestrator. `shutdown` flush batch spans và metric reader; không gọi nó sau mỗi request.
+
+## Kiểm thử
+
+Unit test business instrumentation bằng in-memory span exporter và `SimpleSpanProcessor`; reset global providers giữa test suites. Assert span name, parent, status và allowlisted attributes thay vì snapshot toàn bộ span. Integration test nên chạy Collector container, gửi request thật và chờ hữu hạn vì batch export bất đồng bộ.
+
+Một test quan trọng là preload: import app sau bootstrap và xác nhận có server span. Test thêm trường hợp outbound HTTP để chứng minh trace ID được giữ qua propagation.
+
+## Lỗi thường gặp
+
+| Triệu chứng | Nguyên nhân thường gặp | Cách xử lý |
+| --- | --- | --- |
+| Không có HTTP span | Express/HTTP được import trước SDK | Preload bootstrap trước entrypoint |
+| Chỉ có manual span | Auto-instrumentation bị tắt hoặc module không tương thích | Bật diagnostic logs và kiểm tra supported versions |
+| Span không cùng trace | Detached callback/worker/custom carrier | Capture hoặc inject/extract context rõ ràng |
+| `ECONNREFUSED` khi export | Sai cổng/protocol Collector | Ghép 4318 với `http/protobuf`, 4317 với `grpc` |
+| Process không thoát | Timer metric/exporter chưa shutdown | Gọi `sdk.shutdown()` trong teardown |
+| Duplicate spans | Hai SDK hoặc hai lần registration | Chỉ định một bootstrap owner |
+
+## Thực hành production
+
+Dùng batch processing mặc định, sampling có chủ đích và Collector gần workload. Lọc instrumentation không cần thiết để giảm overhead. Không thu thập request body, authorization header hoặc raw SQL nếu chưa có policy. Pin dependencies bằng lockfile và chạy load test khi nâng Node, framework hoặc instrumentation packages.
+
+Đặt `service.name`, namespace, version và environment nhất quán. Theo dõi exporter failures nhưng không để lỗi telemetry làm hỏng request. Traces/metrics APIs cốt lõi ổn định; coverage instrumentation, ESM hooks và logs vẫn phụ thuộc phiên bản hệ sinh thái.
+
+## Bước tiếp theo
+
+<Cards>
+  <Card title="Propagation" href="/instrumentation/propagators/" description="Hiểu inject, extract và W3C Trace Context." />
+  <Card title="Manual instrumentation" href="/instrumentation/manual-instrumentation/" description="Thiết kế business spans và metrics." />
+  <Card title="Collector" href="/collector/" description="Nhận, xử lý và xuất OTLP." />
+</Cards>
