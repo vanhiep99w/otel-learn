@@ -1,21 +1,107 @@
 ---
 title: "Ngôn ngữ và framework"
-description: "Placeholder cho cách instrument các runtime và framework phổ biến."
+description: "Chọn lộ trình instrumentation OpenTelemetry phù hợp với runtime, framework và cách vận hành của service."
 ---
 
-Đây là trang khung cho nhóm **Ngôn ngữ và framework** trong lộ trình học OpenTelemetry. Nội dung chi tiết sẽ được bổ sung theo từng bài.
+<Callout type="info" title="Mục tiêu">
+  Trang này giúp bạn chọn giữa zero-code, auto-instrumentation và manual instrumentation, rồi kiểm chứng cùng một luồng OTLP cho mọi ngôn ngữ.
+</Callout>
 
-## Phạm vi dự kiến
+## Mục lục
 
-Placeholder cho cách instrument các runtime và framework phổ biến. Các trang trong sidebar đã được sắp xếp theo thứ tự học đề xuất.
+- [Điều kiện cần](#điều-kiện-cần)
+- [Chọn lộ trình](#chọn-lộ-trình)
+- [So sánh hệ sinh thái](#so-sánh-hệ-sinh-thái)
+- [Quy trình chung](#quy-trình-chung)
+- [Cấu hình OTLP dùng chung](#cấu-hình-otlp-dùng-chung)
+- [Checklist xác minh](#checklist-xác-minh)
+- [Nguyên tắc production](#nguyên-tắc-production)
+- [Chọn ngôn ngữ](#chọn-ngôn-ngữ)
 
-## Các bài trong nhóm
+## Điều kiện cần
 
-- [JavaScript và Node.js](/languages/javascript-nodejs/) — Instrumentation cho Node.js, web server và async context.
-- [Python](/languages/python/) — Instrumentation cho Python application và framework phổ biến.
-- [Java](/languages/java/) — Java agent, SDK và instrumentation cho JVM.
-- [Go](/languages/go/) — SDK Go, context.Context và instrumentation cho service Go.
-- [.NET](/languages/dotnet/) — Instrumentation cho ASP.NET Core và .NET services.
-- [PHP](/languages/php/) — Instrumentation cho PHP runtime và web framework.
-- [Ruby](/languages/ruby/) — Instrumentation cho Ruby application và background jobs.
-- [Rust](/languages/rust/) — SDK và instrumentation cho Rust service.
+Bạn nên biết cách chạy service và cài dependency của ngôn ngữ đã chọn. Chuẩn bị một [OpenTelemetry Collector](/collector/) nhận OTLP, hoặc một backend tương thích OTLP. **OTLP** (OpenTelemetry Protocol) là giao thức truyền traces, metrics và logs từ SDK tới Collector/backend.
+
+Trước khi sửa code, ghi lại một request mẫu, cổng service và tên service mong muốn. Ba dữ kiện này giúp phân biệt lỗi ứng dụng với lỗi pipeline telemetry.
+
+## Chọn lộ trình
+
+- **Zero-code** chèn instrumentation bằng agent, launcher hoặc biến môi trường mà không sửa business code. Chọn cách này để có HTTP, database và messaging spans nhanh.
+- **Auto-instrumentation** dùng các instrumentation library để tự bao quanh API framework. Nó có thể được nạp bằng zero-code hoặc cấu hình trong SDK.
+- **Manual instrumentation** gọi API để tạo business span, domain metric hoặc truyền context qua protocol riêng.
+
+Bắt đầu bằng zero-code/auto nếu runtime hỗ trợ tốt. Sau đó thêm manual spans cho operation như `checkout.reserve_inventory`; đừng tạo thêm một server span trùng với span HTTP do framework instrumentation sở hữu.
+
+## So sánh hệ sinh thái
+
+Trạng thái signal và instrumentation thay đổi theo từng release. Bảng này mô tả cách dùng điển hình, không phải bảng xếp hạng độ trưởng thành.
+
+| Runtime | Điểm vào thường dùng | Auto/zero-code điển hình | Manual thường cần cho |
+| --- | --- | --- | --- |
+| JavaScript/Node.js | NodeSDK khởi tạo trước app | `auto-instrumentations-node` | Business spans, domain metrics |
+| Python | `opentelemetry-distro` và CLI | `opentelemetry-instrument` | Business spans, custom thread/queue boundary |
+| Java | Java agent | `-javaagent` | Domain telemetry và extension |
+| Go | SDK trong code | Instrumentation theo framework | Business logic; không dựa vào monkey patching |
+| .NET | .NET Auto-Instrumentation hoặc SDK | profiler/startup hook | Domain telemetry |
+| PHP | extension và packages | phụ thuộc runtime/framework | Business operation và framework còn thiếu coverage |
+| Ruby | SDK và instrumentation gems | framework gems | Jobs và domain operation |
+| Rust | SDK/crate integration | phụ thuộc ecosystem | Phần lớn wiring và domain telemetry |
+
+Hãy kiểm tra trang trạng thái chính thức của ngôn ngữ trước khi cam kết một signal. Đặc biệt, logs và một số API cấu hình có thể còn experimental hoặc phụ thuộc framework/backend.
+
+## Quy trình chung
+
+1. Chạy Collector/backend và xác nhận OTLP endpoint có thể kết nối.
+2. Đặt `service.name` ổn định bằng resource hoặc `OTEL_SERVICE_NAME`.
+3. Bật auto-instrumentation cho framework và client phổ biến.
+4. Gửi một request có thể lặp lại; tìm server span và child client/database span.
+5. Thêm một manual business span và một metric cardinality thấp.
+6. Kiểm tra propagation qua service kế tiếp. **Propagation** là việc inject/extract trace context trong headers hoặc message metadata.
+7. Thêm flush/shutdown có giới hạn thời gian và test pipeline trong CI.
+
+## Cấu hình OTLP dùng chung
+
+Các SDK tuân theo biến môi trường OpenTelemetry có thể dùng cấu hình nền sau:
+
+```bash
+export OTEL_SERVICE_NAME=checkout-api
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
+export OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
+export OTEL_RESOURCE_ATTRIBUTES=deployment.environment.name=dev,service.version=local
+```
+
+Endpoint tổng quát thường tự nối `/v1/traces`, `/v1/metrics` và `/v1/logs` khi dùng OTLP/HTTP. Nếu đặt biến riêng như `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`, hãy cung cấp endpoint signal đầy đủ theo yêu cầu của SDK. Với OTLP/gRPC, endpoint thường là `http://localhost:4317` và protocol là `grpc`.
+
+<Callout type="warn" title="Không đưa secret vào resource">
+  Resource attributes được gắn vào nhiều record. Không đặt token, email, payload hoặc dữ liệu nhận dạng cá nhân trong biến môi trường telemetry.
+</Callout>
+
+## Checklist xác minh
+
+- [ ] Collector log cho thấy receiver OTLP đã lắng nghe đúng protocol và cổng.
+- [ ] Backend có service đúng `service.name`, không phải `unknown_service`.
+- [ ] Một request tạo server span; outbound call tạo child span cùng trace ID.
+- [ ] Trạng thái lỗi và exception xuất hiện nhưng payload nhạy cảm không bị thu thập.
+- [ ] Metric có unit hợp lý và attributes cardinality hữu hạn.
+- [ ] Logs, nếu bật, chứa trace ID/span ID khi được ghi trong active context.
+- [ ] SIGTERM hoặc test teardown flush dữ liệu trước khi process thoát.
+- [ ] Tắt backend không làm request ứng dụng treo hoặc crash.
+
+## Nguyên tắc production
+
+Pin dependency bằng lockfile và nâng cấp có kiểm thử. Dùng batch processors thay vì export đồng bộ trên request path. Đặt timeout, memory limit và sampling theo ngân sách; sampling là quyết định record/export một phần traces. Collector nên là boundary để retry, enrich và định tuyến thay vì nhúng credential backend vào mọi service.
+
+Giới hạn attributes theo allowlist. ID người dùng, URL đầy đủ và câu SQL động dễ tạo **cardinality** cao, tức quá nhiều tổ hợp giá trị làm tăng chi phí lưu trữ. Theo dõi chính pipeline telemetry bằng health check và internal metrics của Collector.
+
+## Chọn ngôn ngữ
+
+<Cards>
+  <Card title="JavaScript và Node.js" href="/languages/javascript-nodejs/" description="NodeSDK, async context, HTTP và Express." />
+  <Card title="Python" href="/languages/python/" description="Distro, CLI, SDK và Flask." />
+  <Card title="Java" href="/languages/java/" description="Java agent và SDK cho JVM." />
+  <Card title="Go" href="/languages/go/" description="SDK, context.Context và framework instrumentation." />
+  <Card title=".NET" href="/languages/dotnet/" description="Auto-Instrumentation và ASP.NET Core." />
+  <Card title="PHP" href="/languages/php/" description="Extension, SDK và framework phổ biến." />
+  <Card title="Ruby" href="/languages/ruby/" description="Instrumentation gems và background jobs." />
+  <Card title="Rust" href="/languages/rust/" description="SDK crates và ecosystem integrations." />
+</Cards>
