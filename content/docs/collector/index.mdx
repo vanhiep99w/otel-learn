@@ -1,22 +1,145 @@
 ---
 title: "OpenTelemetry Collector"
-description: "Cấu hình, mở rộng và vận hành OpenTelemetry Collector."
+description: "Lộ trình học cách cấu hình, triển khai và vận hành OpenTelemetry Collector an toàn trong production."
 ---
 
-Đây là trang khung cho nhóm **OpenTelemetry Collector** trong lộ trình học OpenTelemetry. Nội dung chi tiết sẽ được bổ sung theo từng bài.
+<Callout type="info" title="Bắt đầu từ mental model">
+  Collector là một dịch vụ trung gian nhận, xử lý và xuất telemetry. Hãy đọc
+  **Tổng quan Collector** trước khi chọn component hoặc viết cấu hình production.
+</Callout>
 
-## Phạm vi dự kiến
+## Mục lục
 
-Cấu hình, mở rộng và vận hành OpenTelemetry Collector. Các trang trong sidebar đã được sắp xếp theo thứ tự học đề xuất.
+- [Collector giải quyết vấn đề gì](#collector-giải-quyết-vấn-đề-gì)
+- [Lộ trình học đề xuất](#lộ-trình-học-đề-xuất)
+  - [Nền tảng](#nền-tảng)
+  - [Luồng dữ liệu](#luồng-dữ-liệu)
+  - [Đóng gói và vận hành](#đóng-gói-và-vận-hành)
+- [Bản đồ nội dung](#bản-đồ-nội-dung)
+- [Cách học bằng một pipeline nhỏ](#cách-học-bằng-một-pipeline-nhỏ)
+- [Cách tự xác minh](#cách-tự-xác-minh)
+- [Sai lầm thường gặp](#sai-lầm-thường-gặp)
+- [Nguồn chính thức](#nguồn-chính-thức)
 
-## Các bài trong nhóm
+## Collector giải quyết vấn đề gì
 
-- [Collector overview](/collector/overview/) — Vai trò và các mode triển khai của Collector.
-- [Collector configuration](/collector/configuration/) — Cấu trúc YAML và cách các component liên kết.
-- [Receivers](/collector/receivers/) — Nhận telemetry qua OTLP và các protocol khác.
-- [Processors](/collector/processors/) — Batch, memory limiter, transform, filter và resource processing.
-- [Exporters](/collector/exporters/) — Gửi telemetry đến backend hoặc hệ thống đích.
-- [Connectors](/collector/connectors/) — Nối pipeline và tạo signal từ signal khác.
-- [Extensions](/collector/extensions/) — Health check, pprof, zPages và extension lifecycle.
-- [Service pipelines](/collector/pipelines/) — Ghép receivers, processors và exporters thành pipeline.
-- [Collector distributions](/collector/collector-distributions/) — Phân biệt core, contrib và custom Collector distribution.
+OpenTelemetry Collector là một binary độc lập với backend. Nó cung cấp một nơi chung để nhận, xử lý và chuyển tiếp traces, metrics và logs.
+
+Ví dụ, ứng dụng gửi OTLP đến một Collector gần nó. Collector thêm metadata Kubernetes, gom batch rồi gửi đến backend. Ứng dụng không cần giữ credential của backend hoặc biết API riêng của nhà cung cấp.
+
+```mermaid
+flowchart LR
+  Apps[Ứng dụng và hạ tầng] -->|OTLP hoặc scrape| R[Receivers]
+  R --> P[Processors]
+  P --> E[Exporters]
+  E --> Backends[Backend quan sát]
+```
+
+Collector không thay thế instrumentation. Nếu ứng dụng không tạo span, metric hoặc log cần thiết, Collector không thể suy ra đầy đủ business context còn thiếu. Xem [Kiến trúc OpenTelemetry](/fundamentals/architecture/) để phân biệt trách nhiệm của API, SDK, Collector và backend.
+
+## Lộ trình học đề xuất
+
+### Nền tảng
+
+1. Đọc [Tổng quan Collector](/collector/overview/) để hiểu agent, gateway, push, pull và ranh giới trách nhiệm.
+2. Đọc [Cấu hình Collector](/collector/configuration/) để biết cách khai báo component và bật chúng trong `service`.
+3. Đọc [Service pipelines](/collector/pipelines/) để theo một signal từ đầu vào đến đầu ra.
+
+### Luồng dữ liệu
+
+4. Chọn [Receivers](/collector/receivers/) để nhận OTLP hoặc scrape một nguồn dữ liệu.
+5. Thêm [Processors](/collector/processors/) khi cần batch, giới hạn bộ nhớ, enrich, filter hoặc transform.
+6. Chọn [Exporters](/collector/exporters/) theo protocol và backend đích.
+7. Dùng [Connectors](/collector/connectors/) chỉ khi cần nối hai pipeline hoặc tạo signal từ signal khác.
+
+### Đóng gói và vận hành
+
+8. Bật [Extensions](/collector/extensions/) cho health check, chẩn đoán hoặc xác thực khi phù hợp.
+9. Chọn [Collector distribution](/collector/collector-distributions/) có đúng component cần dùng. Tạo distribution riêng nếu muốn giảm bề mặt phụ thuộc và kiểm soát supply chain.
+
+<Callout type="idea" title="Học theo đường đi của dữ liệu">
+  Bắt đầu bằng một pipeline OTLP đơn giản. Xác minh từng chặng trước khi thêm
+  transform, routing hoặc nhiều backend. Cách này giúp khoanh vùng lỗi nhanh hơn.
+</Callout>
+
+## Bản đồ nội dung
+
+<Cards>
+  <Card title="Tổng quan Collector" href="/collector/overview/" description="Mental model, topology agent/gateway, push/pull và trade-off." />
+  <Card title="Cấu hình Collector" href="/collector/configuration/" description="Cấu trúc YAML, component ID, service và kiểm tra cấu hình." />
+  <Card title="Receivers" href="/collector/receivers/" description="Nhận dữ liệu được đẩy tới hoặc chủ động scrape nguồn dữ liệu." />
+  <Card title="Processors" href="/collector/processors/" description="Batch, bảo vệ bộ nhớ, enrich, filter và transform telemetry." />
+  <Card title="Exporters" href="/collector/exporters/" description="Gửi dữ liệu đến backend hoặc một Collector khác." />
+  <Card title="Connectors" href="/collector/connectors/" description="Nối pipeline và chuyển đầu ra của pipeline này thành đầu vào khác." />
+  <Card title="Extensions" href="/collector/extensions/" description="Cung cấp năng lực vận hành không nằm trực tiếp trên data pipeline." />
+  <Card title="Service pipelines" href="/collector/pipelines/" description="Ghép receiver, processor và exporter theo từng signal." />
+  <Card title="Collector distributions" href="/collector/collector-distributions/" description="Chọn core, contrib hoặc tự xây distribution phù hợp." />
+</Cards>
+
+## Cách học bằng một pipeline nhỏ
+
+Pipeline tối thiểu sau nhận traces qua OTLP gRPC/HTTP, gom batch và in dữ liệu bằng `debug` exporter:
+
+```yaml
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 127.0.0.1:4317
+      http:
+        endpoint: 127.0.0.1:4318
+
+processors:
+  batch: {}
+
+exporters:
+  debug:
+    verbosity: basic
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [debug]
+```
+
+Cấu hình một component không có nghĩa là component đó đang chạy. Component phải được tham chiếu trong `service.pipelines` hoặc `service.extensions`, tùy loại.
+
+<Callout type="warn" title="Cấu hình mẫu chưa phải cấu hình production">
+  Mẫu chỉ bind loopback vì không có TLS hoặc authenticator. `debug` exporter
+  dành cho kiểm tra và có thể tạo nhiều log. Production cần exporter thật,
+  TLS/xác thực, giới hạn tài nguyên, retry/queue phù hợp và cơ chế giám sát
+  Collector.
+</Callout>
+
+## Cách tự xác minh
+
+Kiểm tra theo thứ tự để biết dữ liệu mất ở đâu:
+
+1. Xác nhận Collector khởi động thành công và không báo lỗi parse hoặc component không tồn tại.
+2. Gửi một trace có thể nhận diện, ví dụ request với một route thử nghiệm.
+3. Kiểm tra receiver đã nhận dữ liệu qua internal telemetry của Collector.
+4. Kiểm tra processor có drop hoặc từ chối dữ liệu không.
+5. Kiểm tra exporter có lỗi, retry, queue đầy hoặc gửi thất bại không.
+6. Tìm trace tương ứng trong backend bằng trace ID hoặc thuộc tính ổn định.
+
+Tên metric nội bộ có thể thay đổi theo phiên bản và cấu hình mức telemetry. Vì vậy, hãy đối chiếu dashboard và alert với tài liệu của distribution đang triển khai thay vì sao chép tên metric một cách máy móc.
+
+## Sai lầm thường gặp
+
+- **Nhầm khai báo với kích hoạt:** component có trong YAML nhưng không nằm trong pipeline.
+- **Nhầm protocol với endpoint:** OTLP/gRPC và OTLP/HTTP dùng transport, port và đường dẫn khác nhau.
+- **Đặt processor sai thứ tự:** thứ tự trong mảng là thứ tự xử lý; filter trước enrich có thể không thấy thuộc tính cần lọc.
+- **Không đặt giới hạn tài nguyên:** tải tăng hoặc backend chậm có thể làm queue và bộ nhớ tăng.
+- **Dùng một gateway đơn lẻ:** gateway tập trung trở thành điểm lỗi duy nhất nếu không có replica, cân bằng tải và capacity planning.
+- **Tạo vòng lặp:** exporter gửi ngược về receiver của cùng luồng, gây nhân bản dữ liệu và cạn tài nguyên.
+- **Bật quá nhiều dữ liệu chẩn đoán:** `debug` verbosity cao trong production có thể tăng CPU, I/O và rò rỉ dữ liệu nhạy cảm vào log.
+
+## Nguồn chính thức
+
+- [OpenTelemetry Collector](https://opentelemetry.io/docs/collector/)
+- [Collector configuration](https://opentelemetry.io/docs/collector/configuration/)
+- [Collector deployment](https://opentelemetry.io/docs/collector/deployment/)
+- [Repository `opentelemetry-collector`](https://github.com/open-telemetry/opentelemetry-collector)
+- [Repository `opentelemetry-collector-contrib`](https://github.com/open-telemetry/opentelemetry-collector-contrib)
