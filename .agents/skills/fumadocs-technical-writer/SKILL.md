@@ -143,6 +143,29 @@ There is no target length and no ceiling — never cut content, explanation, or 
 - It's fine (encouraged) to add extra examples, an extra diagram, or a worked walkthrough if it makes a concept click — don't hold back because it adds length.
 - The only trims that are ever appropriate: removing genuinely redundant restatements, or removing content that's flat-out irrelevant to the doc's purpose. Never trim for length's own sake.
 
+Length being unconstrained is not license to write dense, hard-to-parse prose — it's the opposite: use the room to explain things clearly instead of compressing them. See the next section for the concrete sentence-level rules that make a long doc still easy to read.
+
+## Sentence & paragraph-level readability (required)
+
+Length has no cap, but *density* does — a long doc made of clear sentences is good; a long doc made of dense, jargon-packed sentences is not, even if every fact in it is correct. Apply these rules to every doc this skill produces:
+
+**1. Gloss jargon on first use — don't chain undefined terms.**
+If a sentence needs multiple technical terms the reader may not already know (e.g. "selectivity", "planner", "heap fetch", "visibility map" in a database-internals doc), don't string them together assuming familiarity. Define each unfamiliar term in plain language the first time it appears, in the same sentence or the one right after — a short parenthetical or a one-clause definition is usually enough. Once a term has been defined, it's fine to use it freely afterward.
+- Weak: "Vì selectivity thấp, planner có thể chọn seq scan thay vì index scan để tránh heap fetch dư thừa."
+- Better: "Selectivity — tỷ lệ rows khớp điều kiện — quyết định planner (bộ phận chọn execution plan) có dùng index hay không. Nếu selectivity thấp (đa số rows đều khớp), quét tuần tự cả bảng thường rẻ hơn."
+
+**2. One main idea per sentence — split compound sentences that stack unrelated clauses.**
+If a sentence joins three or four separate claims with commas/periods-as-connectors ("X, và Y, ngoài ra Z, tuy nhiên W..."), split it into separate sentences, one claim each. A reader should never have to hold more than one new idea in mind per sentence. This applies especially to lists of consequences/costs/trade-offs — write them as short sentences or an actual bullet list, not one run-on sentence.
+
+**3. Concrete example immediately with (or before) abstract explanation — never several sentences of abstraction first.**
+Don't state an abstract rule for multiple sentences and only then reveal the example that makes it concrete — by the time the reader reaches the example, they've already lost the thread. Instead: state the rule in one short sentence, then immediately show the concrete example (code, query, scenario), then (if needed) one closing sentence tying the example back to the rule. Abstraction sandwiched by concreteness reads far easier than abstraction stacked up front.
+
+**4. Every hedge needs a landing — don't stack qualifiers without a takeaway.**
+Technical accuracy often requires caveats ("it depends", "not always", "in most cases except when..."), and that's fine — but a paragraph that's nothing but chained qualifiers with no clear bottom line is exhausting to read and teaches the reader nothing they can act on. After hedging, always close with one plain sentence stating what to actually do or conclude (e.g. "Nói ngắn gọn: kiểm tra `EXPLAIN` thay vì đoán."). If a concept genuinely can't be simplified to a clear takeaway, say so explicitly rather than trailing off in qualifiers.
+
+**Self-check before finishing a doc:** re-read a few of the denser paragraphs and ask — could someone unfamiliar with 1-2 of the terms here still follow the sentence? Does any single sentence contain more than one new idea? Is there an example within a sentence or two of every abstract claim? Does every hedge-heavy paragraph end with a clear takeaway? Fix any paragraph that fails these checks before considering the doc done.
+
+
 ## Read before writing
 
 Before producing the file, view `references/fumadocs-components.md` for exact import statements and JSX syntax for every component mentioned above — get these right the first time rather than guessing at prop names.
