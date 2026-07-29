@@ -1,15 +1,465 @@
 ---
-title: "Rust"
-description: "SDK và instrumentation cho Rust service."
+title: "OpenTelemetry cho Rust"
+description: "Hướng dẫn instrument service Rust với Tokio, tracing-opentelemetry, OTLP và Collector theo trạng thái API hiện tại."
 ---
 
-Trang này là **placeholder** cho chủ đề **Rust**. Nội dung hướng dẫn, ví dụ và kiểm chứng sẽ được bổ sung sau.
+import { Step, Steps } from 'fumadocs-ui/components/steps';
 
-## Phạm vi dự kiến
+<Callout type="warn" title="Maturity cần đọc trước">
+  OpenTelemetry Rust chưa cam kết ổn định API ở mức `1.0`. Traces và metrics có
+  thể dùng trong production nhưng crate APIs vẫn có thể breaking giữa release.
+  Logs và nhiều integration trong ecosystem còn experimental hoặc incubating.
+  Hãy khóa dependency, đọc changelog và kiểm thử upgrade.
+</Callout>
 
-SDK và instrumentation cho Rust service.
+## Mục lục
 
-- Mental model và thuật ngữ cần biết.
-- Cấu hình hoặc ví dụ thực hành phù hợp.
-- Cách xác minh kết quả.
-- Failure modes, giới hạn và best practices.
+- [Chọn mô hình instrumentation](#chọn-mô-hình-instrumentation)
+- [Phân biệt tracing span và OpenTelemetry span](#phân-biệt-tracing-span-và-opentelemetry-span)
+- [Chạy service Tokio tối thiểu](#chạy-service-tokio-tối-thiểu)
+  - [Tạo project và dependency](#tạo-project-và-dependency)
+  - [Khởi tạo provider exporter và resource](#khởi-tạo-provider-exporter-và-resource)
+  - [Tạo async work và propagation](#tạo-async-work-và-propagation)
+  - [Chạy chương trình](#chạy-chương-trình)
+- [Context qua async task và HTTP](#context-qua-async-task-và-http)
+  - [Task có quan hệ parent child](#task-có-quan-hệ-parent-child)
+  - [Inject và extract HTTP headers](#inject-và-extract-http-headers)
+- [Framework và tower ecosystem](#framework-và-tower-ecosystem)
+- [Metrics và logs](#metrics-và-logs)
+- [Xác minh bằng Collector](#xác-minh-bằng-collector)
+- [Flush shutdown và lỗi lifecycle](#flush-shutdown-và-lỗi-lifecycle)
+- [Testing](#testing)
+- [Troubleshooting](#troubleshooting)
+- [Checklist production](#checklist-production)
+- [Nguồn chính thức và bài liên quan](#nguồn-chính-thức-và-bài-liên-quan)
+
+## Chọn mô hình instrumentation
+
+Rust không có một auto-instrumentation agent bao phủ ecosystem như một số
+runtime managed. Cách phổ biến là compose các crate tại compile time.
+
+| Mục tiêu | Lựa chọn | Khi dùng |
+| --- | --- | --- |
+| Code đã dùng `tracing` | `tracing-opentelemetry` layer | Chuyển tracing spans thành OTel spans |
+| Library portable | `opentelemetry` API | Không sở hữu exporter hoặc global provider |
+| Application | `opentelemetry_sdk` + `opentelemetry-otlp` | Sở hữu resource, sampling, batching, shutdown |
+| HTTP middleware | Framework/Tower integration | Chỉ sau khi kiểm tra maturity và compatibility |
+| Business operation nhỏ | `#[tracing::instrument]` hoặc `info_span!` | Tên/fields ổn định, không chứa PII |
+
+Nói ngắn gọn: application cấu hình SDK một lần. Library chỉ phát telemetry.
+Dùng `tracing` bridge nếu codebase đã chuẩn hóa trên `tracing`.
+
+## Phân biệt tracing span và OpenTelemetry span
+
+`tracing::Span` là span của ecosystem `tracing`. Subscriber/layer quyết định
+cách xử lý nó. `opentelemetry::trace::Span` là span theo OpenTelemetry API và có
+`SpanContext` dùng cho propagation.
+
+`tracing-opentelemetry` là bridge. Layer nhận tracing spans và tạo OTel spans
+trong provider. Extension trait `OpenTelemetrySpanExt` cho phép gán extracted
+OTel parent vào một tracing span và lấy OTel context để inject.
+
+```text
+#[tracing::instrument] → tracing Span → tracing-opentelemetry Layer → OTel Span
+                                                               ↓
+                                              SDK batch exporter → OTLP
+```
+
+Không tạo một OTel span thủ công và một tracing span cho cùng boundary nếu không
+có chủ đích. Kết quả thường là duplicate hoặc parent hierarchy khó hiểu.
+
+## Chạy service Tokio tối thiểu
+
+Ví dụ dùng Tokio và `tracing`. Nó tạo root request span, một child async span và
+export qua OTLP/gRPC.
+
+<Steps>
+<Step>
+
+### Tạo project và dependency
+
+```bash
+cargo new rust-checkout
+cd rust-checkout
+cargo add tokio --features macros,rt-multi-thread,time
+cargo add tracing tracing-subscriber tracing-opentelemetry
+cargo add opentelemetry --features trace
+cargo add opentelemetry_sdk --features trace,rt-tokio
+cargo add opentelemetry-otlp --features trace,grpc-tonic
+```
+
+Các lệnh lấy release tương thích hiện tại thay vì chép version pin nhanh lỗi
+thời. Commit `Cargo.lock` cho application. Với library, khai báo range có chủ
+đích và kiểm tra nhiều tổ hợp phiên bản trong CI.
+
+</Step>
+<Step>
+
+### Khởi tạo provider exporter và resource
+
+Tạo `src/main.rs`:
+
+```rust
+use std::error::Error;
+use std::time::Duration;
+
+use opentelemetry::global;
+use opentelemetry::trace::TracerProvider as _;
+use opentelemetry::KeyValue;
+use opentelemetry_otlp::WithExportConfig;
+use opentelemetry_sdk::trace::SdkTracerProvider;
+use opentelemetry_sdk::Resource;
+use tracing::{info, info_span, Instrument};
+use tracing_opentelemetry::OpenTelemetryLayer;
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
+
+fn init_telemetry() -> Result<SdkTracerProvider, Box<dyn Error + Send + Sync>> {
+    let exporter = opentelemetry_otlp::SpanExporter::builder()
+        .with_tonic()
+        .with_endpoint(
+            std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT")
+                .unwrap_or_else(|_| "http://localhost:4317".into()),
+        )
+        .build()?;
+
+    let resource = Resource::builder()
+        .with_service_name("rust-checkout")
+        .with_attributes([KeyValue::new(
+            "deployment.environment.name",
+            std::env::var("DEPLOYMENT_ENV").unwrap_or_else(|_| "local".into()),
+        )])
+        .build();
+
+    let provider = SdkTracerProvider::builder()
+        .with_resource(resource)
+        .with_batch_exporter(exporter)
+        .build();
+
+    global::set_tracer_provider(provider.clone());
+    let tracer = provider.tracer("rust-checkout");
+
+    tracing_subscriber::registry()
+        .with(tracing_subscriber::fmt::layer())
+        .with(OpenTelemetryLayer::new(tracer))
+        .try_init()?;
+
+    Ok(provider)
+}
+
+#[tracing::instrument(name = "payment.authorize", skip_all, fields(payment.method = "test"))]
+async fn authorize() {
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    info!(payment.result = "approved", "payment completed");
+}
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
+    let provider = init_telemetry()?;
+
+    let request = info_span!("POST /checkout", otel.kind = "server");
+    async {
+        authorize().await;
+
+        let task = tokio::spawn(
+            async { info!("inventory checked"); }
+                .instrument(info_span!("inventory.check")),
+        );
+        task.await?;
+    }
+    .instrument(request)
+    .await;
+
+    provider.shutdown()?;
+    Ok(())
+}
+```
+
+API builder có thể đổi ở release sau vì crate chưa `1.0`. Nếu compiler báo
+method khác, dùng docs.rs đúng version trong `Cargo.lock`. Đừng ghép snippets từ
+hai major/minor release khác nhau.
+
+`with_batch_exporter` dùng processor nền để giảm latency trên application path.
+Resource gắn danh tính process vào mọi span. `try_init` trả lỗi nếu global
+subscriber đã được cài, thay vì panic âm thầm.
+
+</Step>
+<Step>
+
+### Tạo async work và propagation
+
+`#[tracing::instrument]` tạo span cho mỗi lần gọi `authorize`. `.instrument(...)`
+gắn span vào future. Đây là điểm quan trọng: future có thể được poll trên nhiều
+worker threads, nên thread-local guard giữ qua `.await` là lựa chọn dễ sai.
+
+Task `inventory.check` có parent đúng vì span được tạo khi request span đang
+active. Với detached task sống lâu hơn request, cân nhắc tạo trace mới và dùng
+link thay vì giữ request trace mở về mặt nhân quả.
+
+</Step>
+<Step>
+
+### Chạy chương trình
+
+```bash
+OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317 cargo run
+```
+
+Kỳ vọng Collector nhận `POST /checkout`, `payment.authorize` và
+`inventory.check` trong cùng trace. Log local vẫn xuất qua fmt layer.
+
+</Step>
+</Steps>
+
+## Context qua async task và HTTP
+
+**Context propagation** truyền `SpanContext` qua boundary. HTTP dùng W3C
+`traceparent`. Tokio task cần instrument future hoặc gán parent rõ ràng.
+
+### Task có quan hệ parent child
+
+Ưu tiên `.instrument(span)` hoặc `#[instrument]`:
+
+```rust
+use tracing::{info_span, Instrument};
+
+let span = info_span!("job.enrich");
+let handle = tokio::spawn(async move {
+    enrich().await;
+}.instrument(span));
+```
+
+Tránh giữ `let _guard = span.enter();` qua `.await`. Guard dựa trên lexical scope,
+trong khi future có thể yield và thread chạy việc khác. Điều này có thể gán sai
+active span.
+
+Nếu span được tạo ngoài active parent, đặt OTel parent rõ ràng:
+
+```rust
+use tracing_opentelemetry::OpenTelemetrySpanExt;
+
+let span = tracing::info_span!("consumer.process");
+span.set_parent(extracted_context);
+async { process_message().await }.instrument(span).await;
+```
+
+### Inject và extract HTTP headers
+
+Tạo adapter cho `HeaderMap` vì propagator dùng trait `Injector`/`Extractor`:
+
+```rust
+use http::HeaderMap;
+use opentelemetry::propagation::{Extractor, Injector};
+
+struct HeaderInjector<'a>(&'a mut HeaderMap);
+impl Injector for HeaderInjector<'_> {
+    fn set(&mut self, key: &str, value: String) {
+        if let (Ok(name), Ok(value)) = (key.parse::<http::header::HeaderName>(), value.parse()) {
+            self.0.insert(name, value);
+        }
+    }
+}
+
+struct HeaderExtractor<'a>(&'a HeaderMap);
+impl Extractor for HeaderExtractor<'_> {
+    fn get(&self, key: &str) -> Option<&str> {
+        self.0.get(key).and_then(|v| v.to_str().ok())
+    }
+    fn keys(&self) -> Vec<&str> {
+        self.0.keys().map(|k| k.as_str()).collect()
+    }
+}
+```
+
+Cài propagator một lần ở startup:
+
+```rust
+use opentelemetry_sdk::propagation::TraceContextPropagator;
+opentelemetry::global::set_text_map_propagator(TraceContextPropagator::new());
+```
+
+Inject context của tracing span hiện tại:
+
+```rust
+use tracing_opentelemetry::OpenTelemetrySpanExt;
+
+let context = tracing::Span::current().context();
+opentelemetry::global::get_text_map_propagator(|p| {
+    p.inject_context(&context, &mut HeaderInjector(&mut headers));
+});
+```
+
+Ở server, extract headers rồi gọi `server_span.set_parent(context)` trước khi
+instrument handler. Invalid header phải tạo root context an toàn, không làm
+request panic.
+
+<Callout type="warn" title="Dependency bổ sung cho adapter">
+  Snippet dùng crate `http`. Chạy `cargo add http` nếu framework không re-export
+  đúng type. Trong service thật, ưu tiên middleware đã kiểm thử của framework để
+  tránh inject sau khi request đã được gửi.
+</Callout>
+
+## Framework và tower ecosystem
+
+Axum, Hyper, Tonic và các framework dựa trên Tower thường dùng `TraceLayer` hoặc
+integration ecosystem. Một tracing middleware chỉ tạo tracing span. Bạn vẫn cần
+`tracing-opentelemetry` layer để export nó và propagation middleware để
+extract/inject headers.
+
+`tower-otel` và các crate tương tự có thể hữu ích, nhưng không phải mọi crate đều
+thuộc OpenTelemetry project hoặc có cùng maturity. Trước khi chọn:
+
+1. Kiểm tra owner, release cadence và phiên bản Axum/Tower tương thích.
+2. Xác nhận server span có đúng parent remote.
+3. Xác nhận client inject `traceparent` trước khi gửi request.
+4. Kiểm tra semantic conventions và route template. Không dùng raw URL có ID làm
+   span name.
+5. Đảm bảo middleware không tạo duplicate với `TraceLayer` hiện có.
+
+Manual middleware nhỏ, có test propagation rõ ràng, tốt hơn một integration
+không còn maintain. Nói ngắn gọn: đánh giá crate ecosystem như dependency ứng
+dụng, không coi nó là stable chỉ vì tên có “otel”.
+
+## Metrics và logs
+
+Metrics SDK trong OpenTelemetry Rust có thể dùng nhưng crate API vẫn pre-1.0.
+OTLP metrics cần feature phù hợp, `SdkMeterProvider`, periodic reader và shutdown
+riêng. Hãy triển khai sau traces với một counter/histogram ít cardinality. Ví dụ,
+`checkout.duration` có `result`, không có `user_id`.
+
+OpenTelemetry logs SDK và OTLP log exporter cần được xem là experimental theo
+trạng thái crate/release bạn dùng. `tracing` events cũng không tự động trở thành
+OTel log records chỉ vì OTel tracing layer đã được cài. Có ba lựa chọn rõ ràng:
+
+- giữ `tracing-subscriber` fmt/JSON layer cho log pipeline hiện có;
+- thêm trace/span IDs vào structured logs bằng layer hỗ trợ correlation;
+- thử OTel logs bridge trong một rollout riêng và chấp nhận API churn.
+
+Không quảng bá logs bridge thử nghiệm thành contract stable. Không gửi cùng log
+qua hai layer nếu điều đó tạo duplicate.
+
+## Xác minh bằng Collector
+
+Dùng cấu hình local:
+
+```yaml
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+
+processors:
+  batch: {}
+
+exporters:
+  debug:
+    verbosity: detailed
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [debug]
+```
+
+Chạy Collector theo [local stack](/getting-started/local-stack/), rồi chạy
+`cargo run`. Kiểm tra:
+
+- resource có `service.name=rust-checkout`;
+- ba spans dùng cùng trace ID;
+- child spans trỏ tới request span;
+- instrumentation scope là `rust-checkout`;
+- process shutdown nhưng spans cuối vẫn xuất hiện.
+
+OTLP/gRPC thường dùng `4317`. OTLP/HTTP thường dùng `4318` và signal path. Feature
+`grpc-tonic` cùng `.with_tonic()` phải khớp Collector gRPC receiver.
+
+## Flush shutdown và lỗi lifecycle
+
+`SdkTracerProvider` sở hữu batch processor và exporter. Giữ provider sống tới
+cuối process. Gọi `shutdown()` khi server đã ngừng nhận request và task đang chạy
+đã hoàn tất.
+
+Không gọi shutdown trong request handler. Không chỉ dựa vào drop ở process exit.
+Batch queue có thể còn spans. Trong server thật:
+
+1. Nhận `SIGTERM` bằng `tokio::signal`.
+2. Dừng accept request mới.
+3. Chờ in-flight requests trong deadline.
+4. Shutdown provider ngoài async hot path nếu implementation có thể block.
+5. Để orchestrator grace period lớn hơn drain và export timeout.
+
+Một số release cung cấp `force_flush()` và trả danh sách kết quả. Kiểm tra mọi
+kết quả, ghi lỗi ra stderr/health telemetry, rồi shutdown. API cụ thể phải theo
+version lockfile.
+
+## Testing
+
+Unit test không cần Collector. Dùng in-memory exporter từ
+`opentelemetry_sdk::testing` hoặc exporter test phù hợp với release đang khóa.
+Cấu hình simple processor để spans có ngay sau `end`, hoặc flush batch processor
+trước assert.
+
+Kiểm tra contract sau:
+
+- `payment.authorize` xuất hiện đúng một lần;
+- parent span ID đúng;
+- error được record với status/event mong đợi;
+- fields cardinality cao hoặc PII không được export;
+- remote `traceparent` hợp lệ tạo đúng parent;
+- invalid `traceparent` không panic;
+- spawned future vẫn có parent khi chuyển worker thread.
+
+Integration test nên chạy Collector container và assert debug output hoặc dùng
+backend test. Không assert trace ID cố định. Với tests chạy song song, tránh cài
+global subscriber/provider nhiều lần. Tạo subscriber scoped bằng
+`tracing::subscriber::with_default`, hoặc serialize test thật sự cần global.
+
+## Troubleshooting
+
+| Triệu chứng | Nguyên nhân thường gặp | Hành động |
+| --- | --- | --- |
+| Compile lỗi ở builder | Snippet và crates khác release | Đồng bộ crate versions; đọc docs.rs theo `Cargo.lock` |
+| Có log nhưng không có trace | Chỉ cài fmt layer | Thêm OTel layer và giữ provider sống |
+| Span là root | Future không instrument hoặc chưa extract | Dùng `.instrument`; `set_parent` trước handler |
+| Parent sai ngẫu nhiên | Giữ enter guard qua `.await` | Dùng `Instrument`, không giữ guard qua yield |
+| Không thấy spans cuối | Batch provider chưa shutdown | Drain tasks rồi `shutdown()` |
+| `UNIMPLEMENTED`/connection error | Sai protocol hoặc receiver | Khớp gRPC `4317` với `grpc-tonic` |
+| Duplicate spans | Middleware và manual span cùng boundary | Chọn một owner; bỏ layer/wrapper trùng |
+| Cardinality tăng mạnh | URL/ID nằm trong span name hoặc fields | Dùng route template; allowlist attributes |
+| Test panic subscriber đã tồn tại | Gọi global init nhiều lần | Scoped subscriber hoặc one-time fixture |
+
+Bật internal diagnostics bằng log filter phù hợp cho các crate telemetry trong
+staging. Không bật verbose toàn hệ thống lâu dài vì có thể tăng chi phí và lộ
+metadata.
+
+## Checklist production
+
+- [ ] Commit `Cargo.lock` và dùng dependency audit/update có kiểm soát.
+- [ ] Ghi rõ crate nào stable về signal và crate nào experimental/incubating.
+- [ ] Đặt resource service name, version và environment nhất quán.
+- [ ] Chỉ một owner tạo span cho mỗi HTTP/RPC boundary.
+- [ ] Dùng route template, không dùng raw path có ID làm span name.
+- [ ] Test propagation qua HTTP và `tokio::spawn` trên multi-thread runtime.
+- [ ] Dùng batch exporter với queue/timeout phù hợp memory budget.
+- [ ] Cấu hình parent-based sampling và đo overhead bằng load test.
+- [ ] Bảo vệ OTLP bằng TLS/auth; không để Collector receiver public ngoài ý muốn.
+- [ ] Allowlist fields; cấm secret, body và identifier cardinality cao.
+- [ ] Graceful shutdown flush được spans trong thời hạn orchestrator.
+- [ ] Giám sát dropped spans, export failures và Collector backpressure.
+
+## Nguồn chính thức và bài liên quan
+
+- [OpenTelemetry Rust — tài liệu ngôn ngữ](https://opentelemetry.io/docs/languages/rust/)
+- [Repository `opentelemetry-rust`](https://github.com/open-telemetry/opentelemetry-rust)
+- [Crate `opentelemetry-otlp`](https://docs.rs/opentelemetry-otlp/)
+- [Repository `tracing-opentelemetry`](https://github.com/tokio-rs/tracing-opentelemetry)
+- [W3C Trace Context](https://www.w3.org/TR/trace-context/)
+
+<Cards>
+  <Card title="API và SDK" href="/instrumentation/api-sdk/" description="Phân biệt API, provider, processor và exporter." />
+  <Card title="Propagators" href="/instrumentation/propagators/" description="Thiết kế propagation qua HTTP và messaging." />
+  <Card title="Testing instrumentation" href="/instrumentation/testing-instrumentation/" description="Kiểm thử parentage, schema và export lifecycle." />
+</Cards>

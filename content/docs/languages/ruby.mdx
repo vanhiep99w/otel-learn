@@ -1,15 +1,435 @@
 ---
-title: "Ruby"
-description: "Instrumentation cho Ruby application và background jobs."
+title: "OpenTelemetry cho Ruby"
+description: "Hướng dẫn instrument Ruby, Rails và background job bằng OTLP, kiểm chứng qua Collector và vận hành an toàn."
 ---
 
-Trang này là **placeholder** cho chủ đề **Ruby**. Nội dung hướng dẫn, ví dụ và kiểm chứng sẽ được bổ sung sau.
+import { Step, Steps } from 'fumadocs-ui/components/steps';
 
-## Phạm vi dự kiến
+<Callout type="info" title="Phạm vi và trạng thái">
+  OpenTelemetry Ruby hỗ trợ **traces** và **metrics** ở mức stable. Logs signal
+  chưa có SDK logs hoàn chỉnh như traces. Trong production, hãy correlation log
+  hiện có bằng `trace_id` và `span_id`, rồi để log pipeline vận chuyển log.
+</Callout>
 
-Instrumentation cho Ruby application và background jobs.
+## Mục lục
 
-- Mental model và thuật ngữ cần biết.
-- Cấu hình hoặc ví dụ thực hành phù hợp.
-- Cách xác minh kết quả.
-- Failure modes, giới hạn và best practices.
+- [Chọn cách instrumentation](#chọn-cách-instrumentation)
+- [Mental model và điều kiện cần](#mental-model-và-điều-kiện-cần)
+- [Chạy service tối thiểu](#chạy-service-tối-thiểu)
+  - [Cài dependency](#cài-dependency)
+  - [Khởi tạo SDK trước application](#khởi-tạo-sdk-trước-application)
+  - [Tạo Rack service](#tạo-rack-service)
+  - [Chạy và gọi thử](#chạy-và-gọi-thử)
+- [Manual span và lỗi](#manual-span-và-lỗi)
+- [Propagation qua HTTP và công việc bất đồng bộ](#propagation-qua-http-và-công-việc-bất-đồng-bộ)
+  - [HTTP và framework](#http-và-framework)
+  - [Thread Fiber và background job](#thread-fiber-và-background-job)
+- [Metrics và logs](#metrics-và-logs)
+- [Xác minh OTLP bằng Collector](#xác-minh-otlp-bằng-collector)
+- [Shutdown flush và worker dài hạn](#shutdown-flush-và-worker-dài-hạn)
+- [Testing](#testing)
+- [Sampling filtering và dữ liệu nhạy cảm](#sampling-filtering-và-dữ-liệu-nhạy-cảm)
+- [Troubleshooting](#troubleshooting)
+- [Checklist production](#checklist-production)
+- [Nguồn chính thức và bài liên quan](#nguồn-chính-thức-và-bài-liên-quan)
+
+## Chọn cách instrumentation
+
+**Instrumentation** là code tạo telemetry quanh một operation. Chọn owner cho
+mỗi boundary trước khi cài gem để tránh hai span cùng mô tả một request.
+
+| Nhu cầu | Cách nên bắt đầu | Ví dụ |
+| --- | --- | --- |
+| Đưa Rails/Rack service lên nhanh | `opentelemetry-instrumentation-all` | Rack request, Rails, Net::HTTP, database |
+| Muốn dependency và patching nhỏ | Gem instrumentation đích | Chỉ Rack, Net::HTTP và Sidekiq |
+| Operation nghiệp vụ | Manual API | `checkout.authorize` |
+| Viết gem dùng lại | Chỉ phụ thuộc API | Lấy tracer; application sở hữu SDK |
+
+`instrumentation-all` là bundle tiện dụng. Nó không có nghĩa mọi gem trong
+process đều được hỗ trợ. Với production, đọc startup log và inventory các
+instrumentation thực sự được cài. Dùng targeted gems nếu cần kiểm soát bề mặt
+monkey patch hoặc thời gian khởi động.
+
+## Mental model và điều kiện cần
+
+Một **span** là bản ghi có thời điểm bắt đầu và kết thúc của một operation. Một
+**trace** nối các span bằng parent context. **Resource** là danh tính của process
+phát telemetry, ví dụ `service.name`. **OTLP** là giao thức gửi telemetry tới
+Collector hoặc backend.
+
+```text
+Rack/Rails/job → instrumentation → API → SDK + batch processor → OTLP → Collector
+                                         └ resource + sampler
+```
+
+Bạn cần Ruby đang được ứng dụng hỗ trợ, Bundler và một Collector nhận
+OTLP/HTTP trên `http://localhost:4318`. Không pin mù một phiên bản gem từ bài
+viết. Hãy khóa phiên bản tương thích trong `Gemfile.lock`, kiểm thử rồi nâng cấp
+có chủ đích.
+
+## Chạy service tối thiểu
+
+Ví dụ tạo một Rack service. Rack cung cấp HTTP boundary rõ ràng. Net::HTTP tạo
+một outbound client span khi instrumentation tương ứng được bật.
+
+<Steps>
+<Step>
+
+### Cài dependency
+
+Tạo `Gemfile`:
+
+```ruby
+source "https://rubygems.org"
+
+gem "rack"
+gem "puma"
+gem "opentelemetry-sdk"
+gem "opentelemetry-exporter-otlp"
+gem "opentelemetry-instrumentation-all"
+```
+
+Sau đó chạy:
+
+```bash
+bundle install
+```
+
+Với bộ targeted, thay bundle cuối bằng các gem như
+`opentelemetry-instrumentation-rack`, `opentelemetry-instrumentation-net_http`
+và instrumentation của job framework bạn dùng.
+
+</Step>
+<Step>
+
+### Khởi tạo SDK trước application
+
+Tạo `otel.rb`:
+
+```ruby
+require "opentelemetry/sdk"
+require "opentelemetry/exporter/otlp"
+require "opentelemetry/instrumentation/all"
+
+OpenTelemetry::SDK.configure do |c|
+  c.service_name = ENV.fetch("OTEL_SERVICE_NAME", "ruby-catalog")
+  c.service_version = ENV.fetch("APP_VERSION", "dev")
+  c.resource = OpenTelemetry::SDK::Resources::Resource.create(
+    "deployment.environment.name" => ENV.fetch("DEPLOYMENT_ENV", "local")
+  )
+  c.use_all
+end
+```
+
+`configure` cài provider, resource, processor và các instrumentation. OTLP
+exporter đọc biến môi trường chuẩn. Đặt `OTEL_EXPORTER_OTLP_ENDPOINT` thay vì
+hard-code URL trong source.
+
+<Callout type="warn" title="Bundler và thứ tự require">
+  Require `otel.rb` trước khi Rails environment, Rack app hoặc client libraries
+  được nạp. Một instrumentation dựa vào patch lúc load có thể bỏ lỡ library nếu
+  bootstrap chạy quá muộn. Trong Rails, require bootstrap từ startup entrypoint
+  hoặc initializer đủ sớm, rồi xác minh bằng một request thật.
+</Callout>
+
+</Step>
+<Step>
+
+### Tạo Rack service
+
+Tạo `config.ru`:
+
+```ruby
+require_relative "otel"
+require "rack"
+require "net/http"
+require "json"
+
+TRACER = OpenTelemetry.tracer_provider.tracer("ruby-catalog", "1.0")
+
+app = lambda do |env|
+  body = nil
+  TRACER.in_span("catalog.lookup", attributes: { "app.catalog.source" => "demo" }) do |span|
+    uri = URI("https://example.com/")
+    response = Net::HTTP.get_response(uri)
+    span.set_attribute("app.upstream.status_code", response.code.to_i)
+    body = JSON.generate(ok: true, path: env["PATH_INFO"])
+  rescue StandardError => e
+    span.record_exception(e)
+    span.status = OpenTelemetry::Trace::Status.error(e.message)
+    raise
+  end
+  [200, { "content-type" => "application/json" }, [body]]
+end
+
+run app
+```
+
+`in_span` làm span active trong block và kết thúc span khi block thoát. Rack
+instrumentation tạo server span. Span `catalog.lookup` phải là child của span đó.
+Net::HTTP instrumentation inject W3C `traceparent` và tạo client span.
+
+</Step>
+<Step>
+
+### Chạy và gọi thử
+
+```bash
+OTEL_SERVICE_NAME=ruby-catalog \
+OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318 \
+OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf \
+bundle exec puma config.ru -p 9292
+
+curl http://localhost:9292/catalog
+```
+
+Kỳ vọng có server span, `catalog.lookup` và outbound HTTP span trong cùng trace.
+
+</Step>
+</Steps>
+
+## Manual span và lỗi
+
+Lấy tracer từ global provider thay vì tạo provider trong từng class:
+
+```ruby
+tracer = OpenTelemetry.tracer_provider.tracer("orders", "1.0")
+
+tracer.in_span("order.reserve", attributes: { "order.type" => "standard" }) do |span|
+  span.add_event("inventory.checked", attributes: { "inventory.available" => true })
+  reserve_inventory
+rescue StandardError => error
+  span.record_exception(error)
+  span.status = OpenTelemetry::Trace::Status.error(error.message)
+  raise
+end
+```
+
+Tên span phải ổn định. Dùng `order.reserve`, không dùng `order.4815162342`.
+Đặt ID cụ thể vào attribute chỉ khi policy cho phép. Không ghi token, password,
+body hoặc thông tin cá nhân mặc định.
+
+Không đặt status `OK` cho mọi span thành công. Status mặc định `UNSET` thường
+đúng. Đặt `ERROR` khi operation thất bại theo semantics của operation.
+
+## Propagation qua HTTP và công việc bất đồng bộ
+
+**Propagation** là việc serialize trace context vào carrier, ví dụ HTTP headers
+hoặc job metadata. Mặc định phổ biến là W3C Trace Context với header
+`traceparent`.
+
+### HTTP và framework
+
+- Rack/Rails instrumentation extract parent context từ request và làm nó active.
+- Net::HTTP instrumentation inject context vào outbound request.
+- Rails instrumentation có thể phối hợp với ActiveSupport, database và template
+  integrations. Chỉ bật phần mang giá trị vận hành.
+- Job instrumentation như Sidekiq cần được kiểm tra ở cả client và server side.
+  Producer inject context vào payload. Consumer extract context trước khi chạy.
+
+Nếu tự xây carrier, dùng propagator thay vì tự ghép `traceparent`:
+
+```ruby
+carrier = {}
+OpenTelemetry.propagation.inject(carrier)
+publish_job(carrier)
+
+# Trong consumer:
+parent_context = OpenTelemetry.propagation.extract(received_carrier)
+OpenTelemetry::Context.with_current(parent_context) do
+  TRACER.in_span("job.process") { process_job }
+end
+```
+
+Chỉ allowlist trường propagation. Không serialize toàn bộ `Context` object.
+
+### Thread Fiber và background job
+
+Context thường gắn với execution hiện tại. Nó không nên được giả định tự truyền
+đúng qua mọi `Thread`, `Fiber`, scheduler hoặc queue.
+
+Capture context trước khi tạo thread và attach nó trong thread:
+
+```ruby
+parent = OpenTelemetry::Context.current
+thread = Thread.new do
+  OpenTelemetry::Context.with_current(parent) do
+    TRACER.in_span("parallel.enrich") { enrich }
+  end
+end
+thread.join
+```
+
+Không reuse context đã capture cho một job không còn quan hệ nhân quả. Với queue,
+inject carrier tại thời điểm enqueue và extract tại thời điểm perform. Với retry,
+quyết định rõ retry là child, span mới có link, hay tiếp tục trace theo semantics
+của job framework.
+
+Fiber behavior phụ thuộc Ruby version, scheduler và context storage của phiên
+bản gem. Vì vậy, hãy có integration test chạy đúng server concurrency model.
+Không dùng một biến global để giữ active span.
+
+## Metrics và logs
+
+Ruby metrics SDK là stable, nhưng instrumentation coverage không đồng đều giữa
+các framework. Bắt đầu bằng metric nghiệp vụ ít cardinality. Ví dụ, counter
+`orders.created` có attribute `result=success|failure`, không có `order.id`.
+Exporter và reader APIs có thể thay đổi giữa các dòng gem, nên dùng tài liệu API
+đúng phiên bản lockfile khi cấu hình metrics thủ công.
+
+Logs signal của Ruby chưa nên được trình bày như một SDK logs stable hoàn chỉnh.
+Giữ logger hiện có và thêm trace correlation:
+
+```ruby
+span = OpenTelemetry::Trace.current_span
+context = span.context
+logger.info(
+  "catalog lookup",
+  trace_id: context.valid? ? context.hex_trace_id : nil,
+  span_id: context.valid? ? context.hex_span_id : nil
+)
+```
+
+Structured logger có signature khác nhau. Ví dụ trên thể hiện dữ liệu cần gắn,
+không ép mọi logger nhận cùng tham số. Không đổi log thành span event hàng loạt.
+
+## Xác minh OTLP bằng Collector
+
+Dùng Collector Contrib với debug exporter:
+
+```yaml
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  batch: {}
+
+exporters:
+  debug:
+    verbosity: detailed
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [debug]
+```
+
+Chạy Collector theo [local stack](/getting-started/local-stack/), gọi service rồi
+kiểm tra:
+
+1. `service.name` là `ruby-catalog`.
+2. Ba span có cùng trace ID.
+3. Parent của manual span là Rack server span.
+4. Export tới `/v1/traces` thành công.
+5. Không có authorization header hoặc request body nhạy cảm trong attributes.
+
+Nếu dùng OTLP/gRPC, endpoint thường là port `4317` và protocol là `grpc`. Không
+trộn port/protocol. Với OTLP/HTTP base endpoint, exporter tự thêm `/v1/traces`.
+
+## Shutdown flush và worker dài hạn
+
+Ruby SDK thường dùng batch span processor. **Batching** gom spans rồi export ở
+background để giảm chi phí request. Đổi lại, process phải flush khi shutdown.
+
+SDK cài shutdown hook trong cấu hình thông thường. `at_exit` hữu ích cho process
+thoát bình thường, nhưng không chạy khi `SIGKILL` hoặc crash cứng. Container cần
+termination grace period dài hơn export timeout.
+
+Với Puma, preloading và fork cần chú ý. Không khởi tạo exporter thread ở master
+rồi fork và giả định child dùng an toàn. Khởi tạo hoặc reconfigure SDK trong
+worker lifecycle theo hướng dẫn deployment của gem và server. Với Sidekiq hoặc
+worker dài hạn, bắt `TERM`, ngừng nhận job, chờ job đang chạy, rồi gọi shutdown
+trên tracer provider mà process sở hữu.
+
+Trong test hoặc CLI sở hữu provider, có thể kết thúc rõ ràng:
+
+```ruby
+provider = OpenTelemetry.tracer_provider
+provider.force_flush if provider.respond_to?(:force_flush)
+provider.shutdown if provider.respond_to?(:shutdown)
+```
+
+Không shutdown global provider sau mỗi request.
+
+## Testing
+
+Test shape của telemetry thay vì test exporter network trong unit test.
+OpenTelemetry Ruby SDK cung cấp in-memory hoặc test exporters qua SDK test
+helpers tùy phiên bản.
+
+Một test tốt kiểm tra:
+
+- span `order.reserve` được tạo đúng một lần;
+- parent context đúng;
+- exception được record và status là error;
+- attribute schema đúng và không có PII;
+- shutdown/flush làm spans pending xuất hiện trong exporter.
+
+Trong integration test, chạy Collector debug exporter và gửi một Rack request.
+Đừng assert trace ID cố định. Assert các span cùng trace ID và có quan hệ parent.
+Tắt exporter thật trong unit test bằng test provider hoặc
+`OTEL_SDK_DISABLED=true` khi test không nhắm tới telemetry.
+
+## Sampling filtering và dữ liệu nhạy cảm
+
+**Sampling** quyết định span nào được record/export. Parent-based sampling giữ
+quyết định từ upstream. Đây thường là điểm bắt đầu đúng cho distributed trace.
+Cấu hình bằng biến môi trường chuẩn, ví dụ:
+
+```bash
+OTEL_TRACES_SAMPLER=parentbased_traceidratio
+OTEL_TRACES_SAMPLER_ARG=0.10
+```
+
+Head sampling diễn ra lúc span bắt đầu. Attribute thêm sau đó không giúp quyết
+định sampling ban đầu. Nếu cần quyết định theo toàn trace, cân nhắc tail sampling
+ở Collector và tính trước memory budget.
+
+Filtering nên diễn ra gần nguồn khi dữ liệu bị cấm. Dùng hook/config của
+instrumentation để không capture route, header hoặc query nhạy cảm. Collector
+processor là lớp phòng thủ bổ sung, không phải lý do để gửi secret ra khỏi
+process.
+
+## Troubleshooting
+
+| Triệu chứng | Kiểm tra | Cách xử lý |
+| --- | --- | --- |
+| Không có span Rack/Rails | Startup log và thứ tự require | Nạp `otel.rb` trước application; xác nhận instrumentation tương thích |
+| Manual span là root | Active context tại callback/thread | Capture/attach context hoặc inject/extract qua carrier |
+| Hai server spans | Hai instrumentation sở hữu cùng boundary | Tắt một instrumentation hoặc bỏ wrapper thủ công |
+| `404` ở Collector | OTLP protocol và URL | HTTP dùng `4318` và `/v1/traces`; gRPC dùng `4317` |
+| Mất spans khi deploy | Batch queue chưa flush | Graceful shutdown; tăng termination grace period hợp lý |
+| Memory tăng | Queue đầy, endpoint lỗi hoặc cardinality cao | Kiểm tra exporter log; giới hạn queue; bỏ attributes cardinality cao |
+| Sidekiq trace bị đứt | Chỉ instrument producer hoặc consumer | Bật hai phía và kiểm tra carrier survives serialization |
+| Forked worker không export | SDK tạo trước fork | Khởi tạo theo worker lifecycle; không chia sẻ exporter thread qua fork |
+
+## Checklist production
+
+- [ ] Khóa gem versions trong lockfile và kiểm tra release notes khi nâng cấp.
+- [ ] Đặt `service.name`, version và environment nhất quán.
+- [ ] Chỉ một instrumentation sở hữu mỗi HTTP/job boundary.
+- [ ] Dùng Collector gần workload và TLS/auth khi đi qua network không tin cậy.
+- [ ] Cấu hình batch queue, timeout và retry theo memory budget.
+- [ ] Dùng parent-based sampler; đo overhead trước và sau rollout.
+- [ ] Allowlist attributes; không thu thập secret, payload hoặc ID cardinality cao.
+- [ ] Test context trên đúng Thread/Fiber/job runtime.
+- [ ] Graceful shutdown hoạt động trong Puma và worker lifecycle.
+- [ ] Dashboard/alert giám sát export failures và dropped spans.
+
+## Nguồn chính thức và bài liên quan
+
+- [OpenTelemetry Ruby — tài liệu ngôn ngữ](https://opentelemetry.io/docs/languages/ruby/)
+- [Repository `opentelemetry-ruby`](https://github.com/open-telemetry/opentelemetry-ruby)
+- [Repository instrumentation Ruby](https://github.com/open-telemetry/opentelemetry-ruby-contrib)
+- [OTLP exporter Ruby](https://github.com/open-telemetry/opentelemetry-ruby/tree/main/exporter/otlp)
+
+<Cards>
+  <Card title="Manual instrumentation" href="/instrumentation/manual-instrumentation/" description="Thiết kế span, context, metrics và logs thủ công." />
+  <Card title="Propagators" href="/instrumentation/propagators/" description="Hiểu inject, extract và W3C Trace Context." />
+  <Card title="Testing instrumentation" href="/instrumentation/testing-instrumentation/" description="Kiểm thử telemetry mà không phụ thuộc backend." />
+</Cards>
