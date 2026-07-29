@@ -1,15 +1,359 @@
 ---
 title: "PHP"
-description: "Instrumentation cho PHP runtime và web framework."
+description: "Instrument ứng dụng PHP bằng OpenTelemetry: auto-instrumentation, manual spans, OTLP, context và lifecycle theo execution model."
 ---
 
-Trang này là **placeholder** cho chủ đề **PHP**. Nội dung hướng dẫn, ví dụ và kiểm chứng sẽ được bổ sung sau.
+import { Step, Steps } from 'fumadocs-ui/components/steps';
 
-## Phạm vi dự kiến
+<Callout type="info" title="Phạm vi và mức trưởng thành">
+  Bài này ưu tiên **traces**, signal có đường triển khai PHP phổ biến nhất. PHP
+  SDK có API cho traces, metrics và logs, nhưng mức ổn định, auto-instrumentation
+  và framework coverage thay đổi theo package. Hãy kiểm tra Packagist, registry
+  và README của integration tại thời điểm pin dependency; đừng suy ra rằng cả
+  ba signals đều production-ready chỉ vì SDK có namespace tương ứng.
+</Callout>
 
-Instrumentation cho PHP runtime và web framework.
+## Mục lục
 
-- Mental model và thuật ngữ cần biết.
-- Cấu hình hoặc ví dụ thực hành phù hợp.
-- Cách xác minh kết quả.
-- Failure modes, giới hạn và best practices.
+- [Chọn auto hay manual instrumentation](#chọn-auto-hay-manual-instrumentation)
+- [Yêu cầu runtime và mental model](#yêu-cầu-runtime-và-mental-model)
+- [Tạo dịch vụ HTTP tối thiểu](#tạo-dịch-vụ-http-tối-thiểu)
+  - [Cài PHP extension và Composer packages](#cài-php-extension-và-composer-packages)
+  - [Viết Slim service](#viết-slim-service)
+  - [Chạy với OTLP](#chạy-với-otlp)
+- [Manual span context và propagation](#manual-span-context-và-propagation)
+- [Metrics và logs](#metrics-và-logs)
+- [Processor theo execution model PHP](#processor-theo-execution-model-php)
+- [Framework integrations và coverage](#framework-integrations-và-coverage)
+- [Xác minh qua Collector](#xác-minh-qua-collector)
+- [Flush shutdown và worker dài hạn](#flush-shutdown-và-worker-dài-hạn)
+- [Kiểm thử instrumentation](#kiểm-thử-instrumentation)
+- [Khắc phục sự cố](#khắc-phục-sự-cố)
+- [Checklist production](#checklist-production)
+- [Nguồn chính thức và bài tiếp theo](#nguồn-chính-thức-và-bài-tiếp-theo)
+
+## Chọn auto hay manual instrumentation
+
+**Auto-instrumentation** trong PHP gồm hai phần: extension `opentelemetry` dùng
+Zend Observer để hook functions/methods, và Composer instrumentation packages
+biết semantics của framework/library. Chỉ cài extension không tự tạo đầy đủ HTTP,
+database hay framework spans.
+
+**Manual instrumentation** gọi OpenTelemetry API trong code. Nó phù hợp cho
+business operation và custom transport. Manual tracing không cần extension hook;
+extension là yêu cầu của auto-instrumentation. Tuy vậy, manual setup vẫn cần SDK,
+exporter và dependencies transport qua Composer.
+
+| Mục tiêu | Lựa chọn |
+| --- | --- |
+| Phủ nhanh Slim/Symfony/Laravel hoặc HTTP client được hỗ trợ | Extension + package auto tương ứng |
+| Thấy bước nghiệp vụ như `order.price` | Manual span, thường đặt bên trong auto server span |
+| PHP 7.4 legacy | Manual có thể dùng theo compatibility của package; auto extension yêu cầu PHP 8+ |
+| Kiểm soát provider/processor hoàn toàn | Bootstrap SDK thủ công |
+
+Ví dụ dưới đây dùng auto bootstrap để có server span và thêm một manual child
+span. Đây là đường ngắn nhất nhưng vẫn minh họa đúng cách hai cơ chế phối hợp.
+
+## Yêu cầu runtime và mental model
+
+Bạn cần PHP 8+, PECL/build tools phù hợp platform và Composer. Extension dựa
+trên `zend_observer`; nó phải được load trong đúng SAPI chạy ứng dụng. `php --ri`
+trong CLI không chứng minh PHP-FPM đang đọc cùng `php.ini`.
+
+Mỗi request có một **Context** hiện hành. Context chứa active span và được lưu
+qua context storage. Khi tạo manual span, phải attach context chứa span; nếu chỉ
+tạo rồi end, instrumentation bên trong có thể vẫn dùng parent cũ. Scope trả về
+khi attach phải được detach theo LIFO trong `finally`.
+
+```text
+HTTP request → framework auto span → manual business span → exporter → Collector
+              extract traceparent      active Context
+HTTP response ← detach + end spans ← request shutdown/flush
+```
+
+## Tạo dịch vụ HTTP tối thiểu
+
+<Steps>
+<Step>
+
+### Cài PHP extension và Composer packages
+
+Cài extension theo phương thức phù hợp image/OS, rồi xác minh:
+
+```bash
+pecl install opentelemetry
+# Thêm extension=opentelemetry.so vào php.ini đang được SAPI sử dụng
+php --ri opentelemetry
+```
+
+Khởi tạo ứng dụng Slim và cài SDK, OTLP exporter, auto-instrumentation:
+
+```bash
+composer require \
+  slim/slim slim/psr7 \
+  open-telemetry/sdk \
+  open-telemetry/exporter-otlp \
+  open-telemetry/opentelemetry-auto-slim
+```
+
+OTLP exporter cần một transport HTTP/gRPC tương thích và có thể cần PSR HTTP
+client/discovery packages tùy dependency graph hiện hành. Chạy `composer check-platform-reqs`
+và làm theo lỗi Composer thay vì đoán extension. Với image production, build
+extension và `composer install` ở CI, pin `composer.lock`, không chạy PECL lúc
+container start.
+
+</Step>
+<Step>
+
+### Viết Slim service
+
+Tạo `index.php`:
+
+```php
+<?php
+
+declare(strict_types=1);
+
+use OpenTelemetry\API\Globals;
+use OpenTelemetry\API\Trace\StatusCode;
+use Psr\Http\Message\ResponseInterface as Response;
+use Psr\Http\Message\ServerRequestInterface as Request;
+use Slim\Factory\AppFactory;
+
+require __DIR__ . '/vendor/autoload.php';
+
+$tracer = Globals::tracerProvider()->getTracer('demo.dice');
+$app = AppFactory::create();
+
+$app->get('/roll/{player}', function (Request $request, Response $response, array $args) use ($tracer) {
+    $span = $tracer->spanBuilder('dice.roll')->startSpan();
+    $scope = $span->activate();
+
+    try {
+        $value = random_int(1, 6);
+        $span->setAttribute('game.player.type', $args['player'] === '' ? 'anonymous' : 'named');
+        $span->addEvent('dice.rolled', ['dice.result' => $value]);
+        $response->getBody()->write(json_encode(['value' => $value], JSON_THROW_ON_ERROR));
+        return $response->withHeader('content-type', 'application/json');
+    } catch (Throwable $error) {
+        $span->recordException($error);
+        $span->setStatus(StatusCode::STATUS_ERROR, 'dice roll failed');
+        throw $error;
+    } finally {
+        $scope->detach();
+        $span->end();
+    }
+});
+
+$app->run();
+```
+
+`activate()` lưu span vào Context và trả về scope để detach. Manual span lấy
+active framework span làm parent.
+
+</Step>
+<Step>
+
+### Chạy với OTLP
+
+```bash
+OTEL_PHP_AUTOLOAD_ENABLED=true \
+OTEL_SERVICE_NAME=otel-php-demo \
+OTEL_RESOURCE_ATTRIBUTES='deployment.environment.name=local' \
+OTEL_TRACES_EXPORTER=otlp \
+OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf \
+OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318 \
+OTEL_METRICS_EXPORTER=none \
+OTEL_LOGS_EXPORTER=none \
+php -S localhost:8080 index.php
+```
+
+```bash
+curl --fail http://localhost:8080/roll/alice
+```
+
+Tắt metrics/logs có chủ đích để tutorial không ngụ ý chúng được auto-instrument
+hoặc đã đạt cùng maturity với traces. Sau khi traces chạy ổn, đánh giá từng
+signal và exporter riêng.
+
+</Step>
+</Steps>
+
+<Callout type="warn" title="Kiểm tra API theo dependency đã khóa">
+  OpenTelemetry PHP phát triển theo nhiều packages. Tên constructor, transport
+  factory và capability có thể thay đổi giữa các release line. Ví dụ trên dùng
+  API tracing phổ biến và environment auto-configuration; `composer.lock` cùng
+  test integration mới là contract của ứng dụng bạn.
+</Callout>
+
+## Manual span context và propagation
+
+Một span không tự động active chỉ vì `startSpan()` đã được gọi. Pattern an toàn
+là `start → activate → try/catch/finally → detach → end`. Detach trước khi end để
+khôi phục chính xác parent context; scope phải được tháo theo thứ tự ngược với
+lúc attach.
+
+Auto Slim instrumentation extract W3C `traceparent` từ request và tạo server
+span. Instrumentation của HTTP client được hỗ trợ sẽ inject current context vào
+outgoing headers. Với custom carrier, dùng global text-map propagator và
+getter/setter thay vì tự xử lý header:
+
+```php
+$propagator = Globals::propagator();
+$headers = [];
+$propagator->inject($headers, null, \OpenTelemetry\Context\Context::getCurrent());
+// Gửi $headers qua custom transport.
+```
+
+Chữ ký carrier setter/getter có thể phụ thuộc API release. Hãy dùng adapter có
+test theo package đã pin. Ở consumer, extract context **trước** khi tạo span và
+activate context đó chỉ trong phạm vi xử lý message. Không coi `traceparent` hay
+baggage là dữ liệu xác thực; allowlist baggage tại trust boundary.
+
+PHP context storage cần tương thích execution model. Request tuần tự trong
+PHP-FPM đơn giản hơn coroutine/fiber server. Với Swoole, RoadRunner hoặc fibers,
+kiểm tra package context implementation/integration dành cho runtime đó. Một
+storage global sai sẽ làm context của request đồng thời rò sang nhau.
+
+## Metrics và logs
+
+OpenTelemetry PHP có implementation cho metrics và logs, nhưng bạn cần kiểm tra
+status của API/SDK/exporter và integration cụ thể trước khi cam kết production.
+Không mặc định rằng cài auto Slim sẽ tạo metrics hoặc logs hữu ích.
+
+Nếu bật metrics:
+
+- tạo `Meter` và instruments một lần ở bootstrap;
+- dùng Counter cho delta và Histogram cho latency;
+- không dùng user/order ID, raw route hoặc exception message làm attributes;
+- xác minh periodic export có phù hợp process request ngắn hay không.
+
+Nếu bật logs, cách thực dụng là bridge từ logger hiện có, ví dụ Monolog handler
+trong package contrib. Kiểm tra package maturity riêng. Log được emit khi manual
+span đang active có thể mang trace ID/span ID để correlation. Đừng thay toàn bộ
+logging pipeline chỉ để có correlation nếu backend hiện tại đã hỗ trợ structured
+fields.
+
+## Processor theo execution model PHP
+
+`SimpleSpanProcessor` export đồng bộ khi span kết thúc. Nó dễ debug nhưng thêm
+network latency trực tiếp vào request và không phù hợp traffic production.
+
+`BatchSpanProcessor` gom spans để giảm số lần export. Đổi lại, queue cần thời
+gian được drain. Với PHP-FPM/request process ngắn, phải xác minh auto bootstrap
+có flush ở request shutdown và timeout không làm tăng tail latency. Với CLI job
+rất ngắn, explicit shutdown/flush là quan trọng.
+
+| Execution model | Rủi ro chính | Hành động |
+| --- | --- | --- |
+| PHP-FPM request | Flush mỗi request gây latency; không flush gây mất span | Batch có giới hạn, Collector gần app, đo p95/p99 |
+| CLI job ngắn | Process thoát trước export | `forceFlush()`/`shutdown()` trong `finally` ở owner provider |
+| RoadRunner/Swoole worker | Context/resource giữ qua nhiều requests | Detach mọi scope, end span, periodic flush, theo dõi memory |
+| Queue consumer dài hạn | Span không end khi handler lỗi/cancel | Boundary mỗi message trong `try/finally`; flush khi drain/stop |
+
+Nói ngắn gọn: không chọn processor chỉ theo throughput. Hãy chọn theo lifecycle
+của process và đo cả mất dữ liệu lẫn latency.
+
+## Framework integrations và coverage
+
+Registry có integrations cho các framework/library phổ biến như Slim, Symfony,
+Laravel, WordPress, PSR HTTP clients và database drivers. Chúng có thể nằm ở
+core, contrib hoặc repository riêng, với release cadence khác nhau.
+
+Trước khi bật một package auto:
+
+1. xác nhận PHP/framework versions được hỗ trợ;
+2. xác nhận extension `opentelemetry` đã enable trong đúng SAPI;
+3. đọc spans/attributes nào package tạo và propagation nào được hỗ trợ;
+4. tránh hai packages hook cùng function;
+5. load instrumentation trước lần gọi function đầu tiên, vì hook đăng ký muộn có
+   thể bỏ lỡ call;
+6. load test overhead và kiểm tra xung đột extension.
+
+## Xác minh qua Collector
+
+Dùng Collector có OTLP receiver và `debug` exporter như hướng dẫn
+[Trace đầu tiên](/getting-started/first-trace/). Sau khi gọi endpoint, kiểm tra:
+
+- Resource có `service.name=otel-php-demo`, không phải tên mặc định.
+- Có server span cho route Slim.
+- `dice.roll` là child span trong cùng trace, không phải root riêng.
+- Event `dice.rolled` xuất hiện và không chứa dữ liệu nhạy cảm.
+- Request có `traceparent` hợp lệ từ upstream giữ nguyên trace ID.
+
+Nếu dùng endpoint chung `http://localhost:4318`, OTLP/HTTP exporter thêm signal
+path theo cấu hình. Nếu đặt endpoint riêng cho traces, xác minh có cần URL đầy đủ
+`/v1/traces` theo exporter/protocol đang dùng. Trong container, `localhost` là
+container hiện tại, không phải Collector container.
+
+## Flush shutdown và worker dài hạn
+
+Auto-configured SDK đăng ký shutdown handling, nhưng ứng dụng vẫn phải cho process
+kết thúc bình thường. SIGKILL không chạy shutdown hooks. Trong Kubernetes, dùng
+SIGTERM, ngừng nhận request mới và dành grace period cho request đang chạy cùng
+export cuối.
+
+Nếu tự tạo `TracerProvider`, code bootstrap sở hữu provider cũng phải gọi
+`forceFlush()` và `shutdown()` theo API của version đã pin. Không gọi flush trên
+mỗi span. Worker dài hạn cần:
+
+- detach scope và end span trong `finally` cho từng request/message;
+- không giữ request object, span hoặc Context trong singleton sau operation;
+- flush khi worker recycle/drain và trước process exit;
+- theo dõi memory, exporter queue, failed exports và worker restarts;
+- kiểm thử cancellation, fatal error và timeout path.
+
+## Kiểm thử instrumentation
+
+Unit test route/business code với in-memory span exporter nếu SDK release cung
+cấp test utilities phù hợp. Assert span name, parent, status và allowlisted
+attributes. Test exception để chứng minh scope vẫn detach và span vẫn end.
+
+Integration test nên chạy cùng SAPI production. Một test CLI không phát hiện
+`php.ini` khác của FPM hoặc lỗi context trong coroutine worker. Khởi động
+Collector tạm, gửi request có `traceparent` biết trước, rồi assert server/manual
+spans cùng trace. Không assert span ID ngẫu nhiên hoặc thời gian export tức thì.
+
+## Khắc phục sự cố
+
+| Hiện tượng | Kiểm tra và cách sửa |
+| --- | --- |
+| Không có auto spans | `OTEL_PHP_AUTOLOAD_ENABLED=true`; `php --ri opentelemetry`; package framework đã cài và load sớm |
+| CLI có extension, FPM không có | So sánh `php --ini` với FPM config; restart workers sau thay đổi ini |
+| Manual span thành root | Framework span chưa active hoặc quên `activate()`; kiểm tra thứ tự middleware |
+| Context lẫn request | Storage không phù hợp coroutine/fiber hoặc scope không detach trong `finally` |
+| Exporter báo connection refused | Sai protocol/port; container đang dùng `localhost`; Collector chưa expose receiver |
+| HTTP 404/415 | Trộn OTLP/gRPC và OTLP/HTTP hoặc thiếu/sai signal path/content type |
+| Request chậm | Đang dùng simple processor hoặc Collector xa; chuyển batch và đo lại |
+| Mất spans khi worker dừng | Grace period quá ngắn, provider không shutdown hoặc process bị SIGKILL |
+| Fatal error do hooks | Kiểm tra extension conflict, hook signature và compatibility của integration |
+
+Tạm dùng console exporter để xác định SDK có tạo span trước khi debug OTLP. Không
+để console exporter ở production traffic cao vì serialization/stdout có thể trở
+thành bottleneck.
+
+## Checklist production
+
+- Pin Composer lock, PHP extension và container digest; nâng cấp qua staging.
+- Xác minh extension trong đúng CLI/FPM/worker SAPI.
+- Chỉ bật integrations đã kiểm thử; tránh duplicate hooks.
+- Đặt Resource nhất quán và gửi OTLP tới Collector gần workload bằng TLS/auth.
+- Chọn batch/simple processor theo execution model và đo tail latency.
+- Bảo đảm detach/end/flush/shutdown trên success, exception và cancellation.
+- Giới hạn sampling, span attributes và metric cardinality; redact secret/PII.
+- Test propagation qua HTTP/queue và isolation giữa requests đồng thời.
+- Theo dõi exporter errors, dropped telemetry, memory và worker recycle.
+
+## Nguồn chính thức và bài tiếp theo
+
+- [OpenTelemetry PHP — Getting started](https://opentelemetry.io/docs/languages/php/getting-started/)
+- [OpenTelemetry PHP repository](https://github.com/open-telemetry/opentelemetry-php)
+- [PHP auto-instrumentation extension](https://github.com/open-telemetry/opentelemetry-php-instrumentation)
+- [OpenTelemetry Registry cho PHP](https://opentelemetry.io/ecosystem/registry/?language=php)
+
+<Cards>
+  <Card title="Manual instrumentation" href="/instrumentation/manual-instrumentation/" description="Context, propagation và telemetry nghiệp vụ." />
+  <Card title="Instrumentation libraries" href="/instrumentation/instrumentation-libraries/" description="Đánh giá integration và tránh duplicate telemetry." />
+  <Card title="Testing instrumentation" href="/instrumentation/testing-instrumentation/" description="Thiết kế unit và integration tests cho telemetry." />
+  <Card title="Troubleshooting" href="/troubleshooting/" description="Chẩn đoán SDK, OTLP, Collector và backend." />
+</Cards>

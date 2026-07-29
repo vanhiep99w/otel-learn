@@ -1,15 +1,313 @@
 ---
 title: ".NET"
-description: "Instrumentation cho ASP.NET Core và .NET services."
+description: "Instrument ASP.NET Core bằng OpenTelemetry .NET: traces, metrics, log correlation, OTLP và vận hành production."
 ---
 
-Trang này là **placeholder** cho chủ đề **.NET**. Nội dung hướng dẫn, ví dụ và kiểm chứng sẽ được bổ sung sau.
+import { Step, Steps } from 'fumadocs-ui/components/steps';
 
-## Phạm vi dự kiến
+<Callout type="info" title="Lộ trình thực hành">
+  Bài này dùng ASP.NET Core Minimal API và **code-based instrumentation** để bạn
+  kiểm soát Resource, sampling và telemetry nghiệp vụ. Bạn cần .NET SDK 8 trở
+  lên và một OpenTelemetry Collector nhận OTLP/HTTP tại `localhost:4318`.
+</Callout>
 
-Instrumentation cho ASP.NET Core và .NET services.
+## Mục lục
 
-- Mental model và thuật ngữ cần biết.
-- Cấu hình hoặc ví dụ thực hành phù hợp.
-- Cách xác minh kết quả.
-- Failure modes, giới hạn và best practices.
+- [Chọn zero-code hay code-based](#chọn-zero-code-hay-code-based)
+- [Mental model của OpenTelemetry .NET](#mental-model-của-opentelemetry-net)
+- [Tạo dịch vụ ASP.NET Core](#tạo-dịch-vụ-aspnet-core)
+  - [Cài dependencies](#cài-dependencies)
+  - [Cấu hình provider Resource và exporter](#cấu-hình-provider-resource-và-exporter)
+  - [Thêm span và metric nghiệp vụ](#thêm-span-và-metric-nghiệp-vụ)
+- [Context propagation và log correlation](#context-propagation-và-log-correlation)
+- [Cấu hình OTLP và xác minh với Collector](#cấu-hình-otlp-và-xác-minh-với-collector)
+- [Framework integrations filtering và sampling](#framework-integrations-filtering-và-sampling)
+- [Lifecycle flush và shutdown](#lifecycle-flush-và-shutdown)
+- [Kiểm thử instrumentation](#kiểm-thử-instrumentation)
+- [Khắc phục sự cố](#khắc-phục-sự-cố)
+- [Checklist production](#checklist-production)
+- [Nguồn chính thức và bài tiếp theo](#nguồn-chính-thức-và-bài-tiếp-theo)
+
+## Chọn zero-code hay code-based
+
+.NET có hai đường triển khai. **Code-based instrumentation** thêm NuGet packages
+và cấu hình `AddOpenTelemetry()` trong ứng dụng. **Zero-code instrumentation**
+gắn profiler/Startup Hook vào process lúc khởi động, không cần sửa source.
+
+| Chọn | Phù hợp khi | Đánh đổi |
+| --- | --- | --- |
+| Code-based | Bạn sở hữu source, cần business spans/metrics, filter hoặc sampler rõ ràng | Phải build và phát hành ứng dụng |
+| Zero-code | Cần phủ nhanh một ứng dụng cũ hoặc không thể sửa source | Phụ thuộc agent, runtime/OS và danh sách integration được hỗ trợ |
+| Kết hợp | Auto tạo framework spans, API tạo business telemetry | Phải tránh đăng ký cùng instrumentation hai lần |
+
+Zero-code không có nghĩa là mọi thư viện đều được instrument. Hãy kiểm tra ma
+trận tương thích của OpenTelemetry .NET Automatic Instrumentation, pin bản agent
+đã kiểm thử và bật từng process có chủ đích. Với ứng dụng mới, code-based thường
+là baseline dễ review hơn; dùng zero-code để bootstrap hoặc cho workload không
+thể rebuild.
+
+## Mental model của OpenTelemetry .NET
+
+.NET dùng `System.Diagnostics.Activity` làm representation của span và
+`ActivitySource` làm nguồn tạo Activity. OpenTelemetry `TracerProvider` lắng
+nghe các source đã đăng ký, quyết định sampling, xử lý rồi export Activity.
+Nếu source chưa được `AddSource(...)`, `StartActivity()` có thể trả về `null`;
+đó là fast path hợp lệ khi không có listener hoặc span không được sample.
+
+`Meter` và instruments trong `System.Diagnostics.Metrics` đóng vai trò tương tự
+cho metrics. Provider có lifecycle cấp ứng dụng; `ActivitySource`, `Meter` và
+instruments nên được tạo một lần, không tạo lại trên mỗi request.
+
+```text
+HTTP request → ASP.NET Core Activity → business Activity → HttpClient Activity
+                                      └→ Counter/Histogram
+Providers → processor/reader → OTLP exporter → Collector → backend
+```
+
+## Tạo dịch vụ ASP.NET Core
+
+<Steps>
+<Step>
+
+### Cài dependencies
+
+```bash
+dotnet new web -n OtelDotnetDemo
+cd OtelDotnetDemo
+dotnet add package OpenTelemetry.Extensions.Hosting
+dotnet add package OpenTelemetry.Instrumentation.AspNetCore
+dotnet add package OpenTelemetry.Instrumentation.Http
+dotnet add package OpenTelemetry.Exporter.OpenTelemetryProtocol
+```
+
+`OpenTelemetry.Extensions.Hosting` nối lifecycle provider với Generic Host.
+Hai instrumentation packages thu thập incoming ASP.NET Core requests và
+outgoing `HttpClient` calls. Không ghi số phiên bản vào tutorial: hãy commit
+`packages.lock.json` hoặc central package management trong dự án thật.
+
+</Step>
+<Step>
+
+### Cấu hình provider Resource và exporter
+
+Thay `Program.cs` bằng ví dụ chạy được sau:
+
+```csharp
+using System.Diagnostics;
+using System.Diagnostics.Metrics;
+using OpenTelemetry.Metrics;
+using OpenTelemetry.Resources;
+using OpenTelemetry.Trace;
+
+var builder = WebApplication.CreateBuilder(args);
+const string ServiceName = "otel-dotnet-demo";
+
+builder.Services.AddHttpClient("upstream");
+builder.Services.AddOpenTelemetry()
+    .ConfigureResource(resource => resource.AddService(
+        serviceName: ServiceName,
+        serviceVersion: typeof(Program).Assembly.GetName().Version?.ToString()))
+    .WithTracing(tracing => tracing
+        .AddSource(Telemetry.ActivitySource.Name)
+        .AddAspNetCoreInstrumentation(options =>
+            options.Filter = context => context.Request.Path != "/health")
+        .AddHttpClientInstrumentation()
+        .AddOtlpExporter())
+    .WithMetrics(metrics => metrics
+        .AddMeter(Telemetry.Meter.Name)
+        .AddAspNetCoreInstrumentation()
+        .AddHttpClientInstrumentation()
+        .AddOtlpExporter());
+
+var app = builder.Build();
+app.MapGet("/health", () => Results.Ok("ok"));
+app.MapGet("/roll/{player?}", async (string? player, IHttpClientFactory clients,
+    ILogger<Program> logger, CancellationToken cancellationToken) =>
+{
+    using var activity = Telemetry.ActivitySource.StartActivity("dice.roll");
+    activity?.SetTag("game.player.type", player is null ? "anonymous" : "named");
+
+    var value = Random.Shared.Next(1, 7);
+    Telemetry.Rolls.Add(1, new KeyValuePair<string, object?>("dice.result", value));
+    logger.LogInformation("Rolled {DiceResult} for {Player}", value, player ?? "anonymous");
+
+    using var response = await clients.CreateClient("upstream")
+        .GetAsync("https://example.com/", cancellationToken);
+    activity?.SetTag("demo.upstream.status_code", (int)response.StatusCode);
+    return Results.Ok(new { player = player ?? "anonymous", value });
+});
+
+app.Run();
+
+static class Telemetry
+{
+    internal static readonly ActivitySource ActivitySource = new("Demo.Dice");
+    internal static readonly Meter Meter = new("Demo.Dice");
+    internal static readonly Counter<long> Rolls =
+        Meter.CreateCounter<long>("dice.rolls", unit: "{roll}");
+}
+```
+
+`service.name` nằm trong Resource, không lặp trên từng span. `AddOtlpExporter()`
+đọc cấu hình chuẩn từ environment; code vì thế không chứa endpoint hay secret.
+
+</Step>
+<Step>
+
+### Thêm span và metric nghiệp vụ
+
+`using var activity` bảo đảm `Stop()` khi scope kết thúc, kể cả có exception.
+Activity mới tự lấy `Activity.Current` làm parent và trở thành current trong
+scope. Span `dice.roll` vì vậy là con của incoming ASP.NET Core server span.
+
+Counter minh họa metric domain. Trong production, không dùng user ID, raw URL
+hay exception message làm metric attribute vì mỗi giá trị tạo thêm time series.
+`dice.result` chỉ có sáu giá trị nên cardinality bị chặn rõ ràng.
+
+</Step>
+</Steps>
+
+## Context propagation và log correlation
+
+ASP.NET Core instrumentation extract W3C `traceparent`/`tracestate` từ request.
+`HttpClient` instrumentation inject current context vào request đi ra. `Activity`
+được truyền qua `async/await` bằng `AsyncLocal`, nên code bình thường không cần
+copy trace ID hoặc tự tạo HTTP headers.
+
+Khi tự triển khai protocol, dùng `Propagators.DefaultTextMapPropagator` để
+inject/extract carrier. Không parse hoặc nối `traceparent` thủ công. Với
+fire-and-forget work, đừng giữ request Activity sống vô hạn; tạo operation/job
+boundary riêng và propagate context qua metadata của queue.
+
+`Microsoft.Extensions.Logging` tự thêm scope/context liên quan đến Activity cho
+provider hỗ trợ chúng. Nếu cần export logs bằng OTLP, cấu hình logging pipeline
+riêng bằng `builder.Logging.AddOpenTelemetry(...)` và package exporter tương
+ứng. Nếu backend chỉ ingest application logs từ stdout, giữ structured logging
+và cấu hình formatter/agent đưa `TraceId` và `SpanId` vào record. **Đừng tạo một
+span cho mỗi log.** Logs giải thích sự kiện; traces mô tả operation.
+
+<Callout type="warn" title="Logs là pipeline riêng">
+  `WithTracing()` và `WithMetrics()` không tự export logs. Log correlation có thể
+  tồn tại mà log vẫn đi qua console hoặc một logging backend khác. Xác minh cả
+  field correlation lẫn đích export thay vì suy luận từ việc trace đã xuất hiện.
+</Callout>
+
+## Cấu hình OTLP và xác minh với Collector
+
+Ví dụ dùng OTLP/HTTP protobuf để gửi cả traces và metrics:
+
+```bash
+export OTEL_SERVICE_NAME=otel-dotnet-demo
+export OTEL_RESOURCE_ATTRIBUTES='deployment.environment.name=local'
+export OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
+export OTEL_TRACES_SAMPLER=parentbased_traceidratio
+export OTEL_TRACES_SAMPLER_ARG=1.0
+dotnet run --urls http://localhost:8080
+```
+
+Với biến endpoint chung, SDK tự nối signal path như `/v1/traces`. Nếu dùng biến
+`OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`, endpoint theo signal phải là URL đầy đủ
+phù hợp với protocol. OTLP/gRPC thường dùng `4317`; OTLP/HTTP thường dùng `4318`.
+
+Gửi request:
+
+```bash
+curl --fail http://localhost:8080/roll/alice
+```
+
+Trong Collector `debug` exporter hoặc backend, kiểm tra:
+
+1. Resource có `service.name=otel-dotnet-demo`.
+2. Server span của `/roll/{player?}` là parent của `dice.roll`.
+3. Outgoing HTTP client span nằm trong cùng trace.
+4. Metric `dice.rolls` tăng và có attribute hữu hạn.
+5. Structured log trong handler có cùng trace ID/span ID với active span.
+
+Xem [Trace đầu tiên](/getting-started/first-trace/) để dựng Collector debug
+pipeline và [OTLP](/protocols-backends/otlp/) để phân biệt transport, endpoint.
+
+## Framework integrations filtering và sampling
+
+Thêm instrumentation theo dependency thật, chẳng hạn ASP.NET Core, `HttpClient`,
+database client hoặc messaging library. Registry của OpenTelemetry liệt kê cả
+instrumentation chính thức lẫn ecosystem; mức ổn định và owner không giống nhau.
+Đọc README/release notes của từng package trước khi bật production.
+
+Filtering loại bỏ span không hữu ích tại instrumentation, ví dụ `/health` ở code
+trên. Enrichment thêm attributes có kiểm soát. Không ghi request/response body,
+token, cookie hoặc query string chưa redact.
+
+Sampling quyết định span nào được record/export:
+
+- `ParentBased` giữ quyết định của upstream và tránh trace bị đứt ngẫu nhiên.
+- `TraceIdRatioBased` giảm volume theo tỷ lệ; đặt dưới `ParentBased` cho service.
+- `AlwaysOn` hữu ích local nhưng thường tốn kém ở production.
+
+Environment ở ví dụ đặt tỷ lệ `1.0` chỉ để xác minh. Hạ tỷ lệ theo traffic và
+budget, sau đó dùng tail sampling ở Collector nếu cần giữ lỗi/latency theo nội
+dung hoàn chỉnh. Tail sampling cần đủ capacity vì Collector phải giữ trace tạm.
+
+## Lifecycle flush và shutdown
+
+Generic Host sở hữu providers được đăng ký bởi `AddOpenTelemetry()` và dispose
+chúng khi ứng dụng shutdown bình thường. Exporter/processor có cơ hội flush dữ
+liệu đang đợi. Hãy để SIGTERM đi qua graceful shutdown và đặt termination grace
+period dài hơn export timeout.
+
+Không gọi `BuildServiceProvider()` phụ trong startup và không tạo provider trên
+mỗi request. Với CLI/test process sống rất ngắn, giữ reference tới provider rồi
+gọi `ForceFlush()` khi cần xác minh, sau đó `Dispose()`. `ForceFlush()` không
+thay thế graceful shutdown và không nên chạy trên mỗi request.
+
+## Kiểm thử instrumentation
+
+Unit test nên dùng `ActivityListener` hoặc in-memory exporter để assert tên,
+parent, tags và status mà không mở network. Với metrics, dùng in-memory exporter
+hoặc `MeterListener` để kiểm tra instrument và attribute set. Luôn test cả trường
+hợp không có listener vì `StartActivity()` có thể trả `null`.
+
+Integration test khởi động app và Collector/backend tạm, gọi `/roll/test`, rồi
+assert theo `service.name` và một marker cardinality thấp. Không assert span ID
+cố định. Thêm test propagation hai service để chứng minh trace ID được giữ và
+quan hệ parent-child đúng.
+
+## Khắc phục sự cố
+
+| Hiện tượng | Kiểm tra và cách sửa |
+| --- | --- |
+| `StartActivity()` trả `null` | Tên trong `AddSource("Demo.Dice")` phải khớp source; sampler có thể drop span |
+| Có server span, thiếu client span | Đã gọi `AddHttpClientInstrumentation()` và dùng `HttpClient` pipeline được hỗ trợ chưa |
+| `UNAVAILABLE` hoặc connection refused | Collector có listen đúng protocol/port và app container có đang trỏ nhầm `localhost` không |
+| HTTP 404 khi export | Không trộn gRPC với HTTP; kiểm tra signal path khi dùng endpoint theo signal |
+| Trace bị đứt | Không tự tạo root Activity; kiểm tra `traceparent`, async boundary và queue propagation |
+| Metrics không thấy ngay | Metric reader export theo chu kỳ; chờ interval hoặc flush lúc test |
+| Dữ liệu trùng | Không bật cùng instrumentation qua cả agent zero-code và code-based |
+
+Bật `ConsoleExporter` tạm thời trong môi trường phát triển để tách lỗi SDK khỏi
+lỗi Collector. Không giữ console exporter ở workload traffic cao.
+
+## Checklist production
+
+- Pin NuGet packages và zero-code agent; theo dõi release notes khi nâng cấp.
+- Đặt `service.name`, `service.version`, environment và instance metadata nhất quán.
+- Gửi OTLP tới Collector gần workload; cấu hình TLS/auth và không hard-code secret.
+- Dùng batch export mặc định, timeout hợp lý và graceful shutdown.
+- Đặt sampling/cardinality budget; filter health checks và noisy endpoints.
+- Redact secrets/PII ở nguồn và bổ sung policy tại Collector.
+- Theo dõi queue/drop/error của SDK, Collector và backend.
+- Load test overhead, nhất là khi bật thêm database, runtime metrics hoặc logs.
+
+## Nguồn chính thức và bài tiếp theo
+
+- [OpenTelemetry .NET — Getting started](https://opentelemetry.io/docs/languages/dotnet/getting-started/)
+- [OpenTelemetry .NET repository](https://github.com/open-telemetry/opentelemetry-dotnet)
+- [.NET Automatic Instrumentation](https://opentelemetry.io/docs/zero-code/dotnet/)
+- [.NET instrumentation repository](https://github.com/open-telemetry/opentelemetry-dotnet-instrumentation)
+
+<Cards>
+  <Card title="Manual instrumentation" href="/instrumentation/manual-instrumentation/" description="Thiết kế business spans, metrics và propagation." />
+  <Card title="Auto-instrumentation" href="/instrumentation/auto-instrumentation/" description="Hiểu phạm vi và trade-off của zero-code." />
+  <Card title="Resources" href="/instrumentation/resources/" description="Chuẩn hóa service identity và metadata." />
+  <Card title="Production" href="/production/" description="Sampling, bảo mật và vận hành telemetry pipeline." />
+</Cards>
