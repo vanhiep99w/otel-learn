@@ -1,15 +1,109 @@
 ---
 title: "Observability là gì?"
-description: "Phân biệt logs, metrics, traces và câu hỏi observability cần trả lời."
+description: "Hiểu observability, telemetry và cách traces, metrics, logs bổ sung cho nhau."
 ---
 
-Trang này là **placeholder** cho chủ đề **Observability là gì?**. Nội dung hướng dẫn, ví dụ và kiểm chứng sẽ được bổ sung sau.
+<Callout type="info" title="Định nghĩa ngắn">
+  Observability là khả năng hiểu trạng thái bên trong của một hệ thống từ những
+  dữ liệu mà hệ thống phát ra bên ngoài. Mục tiêu không chỉ là biết hệ thống
+  đang down, mà còn trả lời được “điều gì đang xảy ra?” và “tại sao?”.
+</Callout>
 
-## Phạm vi dự kiến
+## Mục lục
 
-Phân biệt logs, metrics, traces và câu hỏi observability cần trả lời.
+- [Observability giải quyết vấn đề gì?](#observability-giải-quyết-vấn-đề-gì)
+- [Monitoring và observability](#monitoring-và-observability)
+- [Telemetry và ba câu hỏi chính](#telemetry-và-ba-câu-hỏi-chính)
+  - [Metrics: chuyện gì đang xảy ra trên diện rộng?](#metrics-chuyện-gì-đang-xảy-ra-trên-diện-rộng)
+  - [Logs: có sự kiện nào đáng chú ý?](#logs-có-sự-kiện-nào-đáng-chú-ý)
+  - [Traces: một request đã đi qua đâu?](#traces-một-request-đã-đi-qua-đâu)
+- [Correlation giúp điều tra nhanh hơn](#correlation-giúp-điều-tra-nhanh-hơn)
+- [Từ câu hỏi đến dữ liệu](#từ-câu-hỏi-đến-dữ-liệu)
+- [Những điều observability không tự giải quyết](#những-điều-observability-không-tự-giải-quyết)
 
-- Mental model và thuật ngữ cần biết.
-- Cấu hình hoặc ví dụ thực hành phù hợp.
-- Cách xác minh kết quả.
-- Failure modes, giới hạn và best practices.
+## Observability giải quyết vấn đề gì?
+
+Một hệ thống phân tán có nhiều service, queue, database và dependency bên ngoài. Một request của người dùng có thể thành công ở frontend nhưng chậm ở một service phía sau. Một metric tổng hợp có thể cho thấy latency tăng, nhưng chưa nói được request nào chậm, span nào chậm, hay log lỗi nào liên quan.
+
+Observability giúp đội vận hành điều tra những tình huống chưa được dự đoán trước, thường gọi là **unknown unknowns**. Thay vì chỉ kiểm tra một dashboard định sẵn, người điều tra có thể đặt câu hỏi mới trên dữ liệu đã thu thập.
+
+```mermaid
+flowchart LR
+  Q["Câu hỏi: Vì sao checkout chậm?"] --> M["Metric: latency và error rate"]
+  M --> T["Trace: tìm request và span chậm"]
+  T --> L["Log: xem lỗi và chi tiết đầu vào"]
+  L --> C["Xác định nguyên nhân và hành động"]
+```
+
+## Monitoring và observability
+
+Monitoring thường tập trung vào việc thu thập các chỉ số đã biết trước và cảnh báo khi chúng vượt ngưỡng. Đây là một phần quan trọng của observability, nhưng không phải toàn bộ observability.
+
+| Khía cạnh | Monitoring | Observability |
+| --- | --- | --- |
+| Mục tiêu | Phát hiện điều kiện bất thường đã biết | Điều tra cả vấn đề chưa biết trước |
+| Dữ liệu | Thường dựa trên metric và alert | Kết hợp traces, metrics, logs và context |
+| Câu hỏi | “Có vượt ngưỡng không?” | “Điều gì xảy ra, với ai, ở đâu và vì sao?” |
+| Kết quả | Alert, dashboard, trạng thái | Bằng chứng để chẩn đoán và cải thiện hệ thống |
+
+## Telemetry và ba câu hỏi chính
+
+**Telemetry** là dữ liệu được phát ra từ hệ thống để mô tả hoạt động của nó. Ba signal phổ biến nhất là metrics, logs và traces. Chúng có độ phân giải và chi phí khác nhau nên không nên dùng một loại để thay thế tất cả loại còn lại.
+
+### Metrics: chuyện gì đang xảy ra trên diện rộng?
+
+Metric là phép đo số được ghi nhận theo thời gian hoặc được tổng hợp theo các chiều. Ví dụ:
+
+- tốc độ request và số request lỗi;
+- latency p50, p95, p99;
+- CPU, memory hoặc số connection;
+- số item trong queue.
+
+Metrics phù hợp cho dashboard, alert và SLO vì kích thước nhỏ, dễ tổng hợp. Đổi lại, chúng thường không giữ lại toàn bộ chi tiết của từng request.
+
+### Logs: có sự kiện nào đáng chú ý?
+
+Log là bản ghi của một sự kiện tại một thời điểm. Log có thể chứa message, severity, timestamp, exception và các field nghiệp vụ. Structured log dạng JSON thường dễ truy vấn hơn chuỗi text tự do.
+
+Log rất hữu ích khi cần xem chi tiết một lỗi, nhưng log độc lập thường khó trả lời request đã đi qua service nào. Hãy gắn `trace_id` và `span_id` vào log khi có context để liên kết log với trace.
+
+### Traces: một request đã đi qua đâu?
+
+Trace mô tả đường đi của một request hoặc operation qua một hệ thống. Trace gồm các **span**; mỗi span đại diện cho một đơn vị công việc như xử lý HTTP request, gọi database hoặc publish message.
+
+Trace phù hợp với câu hỏi về dependency, latency và critical path. Một trace tốt cho biết operation nào chậm và lỗi phát sinh tại service nào, nhưng không nên chứa dữ liệu nhạy cảm hoặc attribute có cardinality quá lớn một cách thiếu kiểm soát.
+
+## Correlation giúp điều tra nhanh hơn
+
+Ba signal có giá trị nhất khi có thể liên kết:
+
+1. Metric cho thấy `checkout` có p95 latency tăng.
+2. Người vận hành mở một trace chậm để thấy thời gian bị tiêu tốn ở `payment-service`.
+3. Từ `trace_id` hoặc `span_id`, họ mở log tương ứng và thấy timeout tới payment provider.
+
+Context propagation truyền thông tin correlation giữa các service. Semantic conventions bảo đảm các field như `http.request.method` hoặc `server.address` có tên và ý nghĩa nhất quán.
+
+<Callout type="warn" title="Đừng biến telemetry thành dữ liệu nhạy cảm">
+  Không ghi password, token, thông tin thẻ hoặc PII tùy tiện vào attributes, logs hay baggage. Telemetry thường được sao chép qua nhiều hệ thống và có thể được truy cập bởi nhiều nhóm.
+</Callout>
+
+## Từ câu hỏi đến dữ liệu
+
+Trước khi bật instrumentation, hãy viết những câu hỏi cần trả lời:
+
+| Câu hỏi | Signal ưu tiên | Dữ liệu nên có |
+| --- | --- | --- |
+| Tỷ lệ lỗi hiện tại là bao nhiêu? | Metric | count request, status, error rate |
+| Request nào chậm và chậm ở đâu? | Trace | span timing, parent-child, route |
+| Lỗi cụ thể có stack trace gì? | Log + trace | exception, message, `trace_id` |
+| Service nào phụ thuộc vào database? | Trace + metric | client span, DB duration, throughput |
+| Người dùng nào bị ảnh hưởng? | Context + thuộc tính được phép | tenant hoặc region đã được kiểm soát cardinality |
+
+## Những điều observability không tự giải quyết
+
+Observability không tự đảm bảo hệ thống đúng, không thay thế test, security review hoặc capacity planning. Nó chỉ cung cấp bằng chứng tốt hơn để con người và automation ra quyết định.
+
+- Thiếu instrumentation thì backend không thể suy luận phần code chưa phát ra dữ liệu.
+- Thu thập quá ít dữ liệu làm mất nguyên nhân; thu thập quá nhiều làm tăng cost và noise.
+- Dashboard đẹp không có nghĩa là metric đang đo đúng trải nghiệm người dùng.
+- Correlation không đồng nghĩa với causation; vẫn cần kiểm chứng giả thuyết bằng logs, traces, metrics và thay đổi hệ thống.

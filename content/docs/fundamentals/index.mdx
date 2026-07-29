@@ -3,18 +3,79 @@ title: "Nền tảng"
 description: "Mental model, thuật ngữ và kiến trúc cốt lõi của OpenTelemetry."
 ---
 
-Đây là trang khung cho nhóm **Nền tảng** trong lộ trình học OpenTelemetry. Nội dung chi tiết sẽ được bổ sung theo từng bài.
+import { Step, Steps } from 'fumadocs-ui/components/steps';
 
-## Phạm vi dự kiến
+<Callout type="info" title="Cách học phần này">
+  Bắt đầu từ câu hỏi observability cần trả lời, sau đó đi qua signals, pipeline,
+  context propagation và semantic conventions. Các bài sau dùng lại những mental
+  model này khi đi vào instrumentation và Collector.
+</Callout>
 
-Mental model, thuật ngữ và kiến trúc cốt lõi của OpenTelemetry. Các trang trong sidebar đã được sắp xếp theo thứ tự học đề xuất.
+## Mục lục
 
-## Các bài trong nhóm
+- [Mục tiêu học tập](#mục-tiêu-học-tập)
+- [Thứ tự đề xuất](#thứ-tự-đề-xuất)
+- [Các khái niệm cần nắm](#các-khái-niệm-cần-nắm)
+- [Tiếp theo](#tiếp-theo)
 
-- [Observability là gì?](/fundamentals/what-is-observability/) — Phân biệt logs, metrics, traces và câu hỏi observability cần trả lời.
-- [OpenTelemetry là gì?](/fundamentals/what-is-opentelemetry/) — Vai trò của OpenTelemetry trong việc tạo và vận chuyển telemetry.
-- [Ba nhóm tín hiệu](/fundamentals/signals-overview/) — Tổng quan về traces, metrics, logs và mối liên hệ giữa chúng.
-- [Telemetry pipeline](/fundamentals/telemetry-pipeline/) — Luồng dữ liệu từ ứng dụng qua Collector đến backend quan sát.
-- [Context propagation](/fundamentals/context-propagation/) — Cách trace context và baggage đi qua các service.
-- [Semantic conventions](/fundamentals/semantic-conventions/) — Quy ước đặt tên attribute, resource và telemetry field.
-- [Kiến trúc OpenTelemetry](/fundamentals/architecture/) — Các thành phần SDK, API, instrumentation, Collector và backend.
+## Mục tiêu học tập
+
+Sau khi hoàn thành phần **Nền tảng**, bạn có thể:
+
+- Giải thích observability khác monitoring như thế nào và chọn signal phù hợp cho một câu hỏi vận hành.
+- Mô tả OpenTelemetry (OTel) là một framework trung lập với vendor để tạo, thu thập, xử lý và export telemetry.
+- Đọc được đường đi của một record qua SDK, OTLP, Collector và backend.
+- Hiểu vì sao một distributed trace vẫn là một trace duy nhất khi request đi qua nhiều service.
+- Dùng semantic conventions để telemetry có thể truy vấn và so sánh nhất quán.
+
+## Thứ tự đề xuất
+
+<Steps>
+<Step>
+
+### Xây mental model
+
+Đọc [Observability là gì?](/fundamentals/what-is-observability/) và [OpenTelemetry là gì?](/fundamentals/what-is-opentelemetry/) để phân biệt vấn đề cần giải quyết với công cụ giải quyết vấn đề.
+
+</Step>
+<Step>
+
+### Nhận diện signals
+
+Đọc [Ba nhóm tín hiệu](/fundamentals/signals-overview/) để biết trace, metric, log và baggage trả lời những câu hỏi khác nhau.
+
+</Step>
+<Step>
+
+### Theo dõi đường đi của dữ liệu
+
+Đọc [Telemetry pipeline](/fundamentals/telemetry-pipeline/) rồi xem [Kiến trúc OpenTelemetry](/fundamentals/architecture/) để nối các thành phần thành một hệ thống hoàn chỉnh.
+
+</Step>
+<Step>
+
+### Hiểu correlation
+
+Đọc [Context propagation](/fundamentals/context-propagation/) và [Semantic conventions](/fundamentals/semantic-conventions/) trước khi bắt đầu instrument một ứng dụng.
+
+</Step>
+</Steps>
+
+## Các khái niệm cần nắm
+
+| Khái niệm | Câu hỏi nó trả lời |
+| --- | --- |
+| **Observability** | Từ các output bên ngoài, ta có thể suy luận hệ thống đang làm gì và vì sao lỗi xảy ra không? |
+| **Telemetry** | Hệ thống đã phát ra dữ liệu gì về hoạt động của nó? |
+| **Signal** | Dữ liệu thuộc loại trace, metric, log hay baggage? |
+| **Instrumentation** | Code hoặc thư viện nào tạo ra telemetry? |
+| **Context propagation** | Làm sao nối các operation ở những process khác nhau? |
+| **Semantic convention** | Tên attribute và cấu trúc nào giúp dữ liệu có ý nghĩa nhất quán? |
+| **Backend** | Nơi lưu trữ, truy vấn, trực quan hóa và cảnh báo trên telemetry. |
+
+## Tiếp theo
+
+<Cards>
+  <Card title="Bắt đầu với Observability" href="/fundamentals/what-is-observability/" description="Tìm hiểu các câu hỏi vận hành và vai trò của traces, metrics, logs." />
+  <Card title="Tạo trace đầu tiên" href="/getting-started/first-trace/" description="Áp dụng mental model vào một ứng dụng nhỏ." />
+</Cards>

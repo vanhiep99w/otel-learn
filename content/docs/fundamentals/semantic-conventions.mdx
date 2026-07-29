@@ -1,15 +1,140 @@
 ---
 title: "Semantic conventions"
-description: "Quy ước đặt tên attribute, resource và telemetry field."
+description: "Quy ước đặt tên resource, attributes và telemetry field để dữ liệu nhất quán."
 ---
 
-Trang này là **placeholder** cho chủ đề **Semantic conventions**. Nội dung hướng dẫn, ví dụ và kiểm chứng sẽ được bổ sung sau.
+import { Step, Steps } from 'fumadocs-ui/components/steps';
 
-## Phạm vi dự kiến
+<Callout type="info" title="Tại sao tên quan trọng?">
+  Hai service cùng ghi “method”, “status” và “host” nhưng dùng tên hoặc kiểu khác
+  nhau sẽ tạo ra dữ liệu khó truy vấn. Semantic conventions cung cấp vocabulary
+  chung cho các loại operation, resource và signal.
+</Callout>
 
-Quy ước đặt tên attribute, resource và telemetry field.
+## Mục lục
 
-- Mental model và thuật ngữ cần biết.
-- Cấu hình hoặc ví dụ thực hành phù hợp.
-- Cách xác minh kết quả.
-- Failure modes, giới hạn và best practices.
+- [Semantic conventions là gì?](#semantic-conventions-là-gì)
+- [Resource và attributes](#resource-và-attributes)
+- [Các nhóm quy ước](#các-nhóm-quy-ước)
+- [Ví dụ HTTP](#ví-dụ-http)
+- [Chọn convention trong thực tế](#chọn-convention-trong-thực-tế)
+- [Cardinality và dữ liệu nhạy cảm](#cardinality-và-dữ-liệu-nhạy-cảm)
+- [Khi convention thay đổi](#khi-convention-thay-đổi)
+
+## Semantic conventions là gì?
+
+Semantic conventions là tập tên và ý nghĩa chung cho attributes, metrics, span names, log fields và resource attributes. OTel có convention cho HTTP, database, messaging, RPC, Kubernetes, cloud provider, runtime và nhiều domain khác.
+
+Convention không chỉ là một danh sách tên. Nó mô tả cả kiểu dữ liệu, điều kiện áp dụng, unit, stability và đôi khi yêu cầu phải có hoặc không được có field.
+
+## Resource và attributes
+
+**Resource** mô tả entity phát telemetry: service, process, host, container hoặc deployment. Resource thường được gắn lên nhiều record để không phải lặp lại ở từng span.
+
+**Attributes** là metadata của một record cụ thể. Ví dụ một span HTTP có method và status code; một span database có system và operation.
+
+| Loại | Ví dụ | Phạm vi |
+| --- | --- | --- |
+| Resource attribute | `service.name`, `service.version` | Nhiều signal của cùng entity |
+| Span attribute | `http.request.method`, `url.path` | Một operation |
+| Metric attribute | `server.address`, `http.response.status_code` | Một nhóm data points |
+| Log attribute | `error.type`, `exception.message` | Một log record |
+
+`service.name` là thuộc tính định danh quan trọng. Nếu không đặt rõ, SDK có thể dùng giá trị mặc định hoặc backend hiển thị service không như mong muốn.
+
+## Các nhóm quy ước
+
+Semantic conventions hiện bao gồm các nhóm chính:
+
+- trace và span attributes;
+- metric names và metric attributes;
+- log fields;
+- resource attributes;
+- profiles và các domain như HTTP, database, messaging, RPC, cloud và runtime.
+
+Khi instrument một operation, ưu tiên convention tương ứng thay vì tự đặt tên như `http_method`, `statusCode` hoặc `dbName`. Attribute custom vẫn được phép cho domain nghiệp vụ, nhưng nên có namespace và tài liệu riêng.
+
+## Ví dụ HTTP
+
+Một HTTP server span có thể sử dụng các field theo convention:
+
+```json
+{
+  "name": "GET /users/{user_id}",
+  "attributes": {
+    "http.request.method": "GET",
+    "http.route": "/users/{user_id}",
+    "url.path": "/users/42",
+    "server.address": "api.example.com",
+    "http.response.status_code": 200
+  },
+  "resource": {
+    "service.name": "user-service",
+    "service.version": "2026.03.0",
+    "deployment.environment.name": "production"
+  }
+}
+```
+
+Tên và tập thuộc tính chính xác cần đối chiếu với version convention mà SDK/instrumentation của bạn đang dùng. Đặc biệt, hãy kiểm tra trạng thái stability khi nâng version.
+
+## Chọn convention trong thực tế
+
+<Steps>
+<Step>
+
+### Xác định loại operation
+
+Đây là HTTP server, HTTP client, database query, message producer, consumer hay business operation? Chọn domain convention tương ứng.
+
+</Step>
+<Step>
+
+### Dùng field chuẩn trước
+
+Tìm attribute và metric name chuẩn cho operation. Giữ đúng kiểu và unit; đừng đổi tên chỉ vì style của một service.
+
+</Step>
+<Step>
+
+### Thêm field nghiệp vụ có kiểm soát
+
+Đặt custom attribute có namespace rõ ràng, mô tả mục đích, kiểu dữ liệu, cardinality và policy dữ liệu nhạy cảm.
+
+</Step>
+<Step>
+
+### Kiểm tra khi ingest
+
+Xem payload thực tế ở Collector `debug` exporter hoặc backend. Kiểm tra resource, span name, status, unit và field có bị instrumentation ghi đè không.
+
+</Step>
+</Steps>
+
+## Cardinality và dữ liệu nhạy cảm
+
+Mỗi giá trị khác nhau của một attribute có thể tạo series hoặc index riêng. Các attribute như `user.id`, `request.id`, URL đầy đủ hoặc error message tự do có thể làm cardinality tăng rất mạnh.
+
+- Dùng route template thay vì URL path chứa ID làm span name.
+- Không đưa user input nguyên bản vào metric labels.
+- Chỉ giữ identifier nghiệp vụ trong trace khi có use case và retention phù hợp.
+- Redact PII, token và secret trước khi export.
+- Tách dữ liệu để query chi tiết (trace/log) khỏi dữ liệu dùng cho aggregation (metric).
+
+<Callout type="warn" title="Convention không thay thế data governance">
+  Một attribute có tên chuẩn vẫn có thể chứa dữ liệu không được phép. Convention
+  nói field đó có nghĩa gì; policy của tổ chức quyết định giá trị nào được phép
+  thu thập, lưu trữ và chia sẻ.
+</Callout>
+
+## Khi convention thay đổi
+
+Semantic conventions có thể có trạng thái experimental, stable hoặc deprecated tùy domain và version. Khi nâng SDK hoặc instrumentation:
+
+1. Đọc changelog và migration note của domain convention.
+2. Kiểm tra field cũ và field mới xuất hiện đồng thời hay bị thay thế.
+3. Cập nhật dashboard, alert, recording rule và query backend.
+4. Chạy canary để so sánh volume, cardinality và dữ liệu trước/sau.
+5. Ghi rõ version convention trong tài liệu hoặc dependency lock.
+
+Đừng chỉ sửa tên field trong một service. Query và các service downstream phải được migration đồng bộ để tránh dashboard bị trống hoặc số liệu bị chia đôi.
