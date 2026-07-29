@@ -4,6 +4,9 @@ const withMDX = createMDX();
 
 /** @type {import('next').NextConfig} */
 const config = {
+  output: 'export',
+  distDir: 'dist',
+  trailingSlash: true,
   reactStrictMode: true,
 };
 

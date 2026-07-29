@@ -1,7 +1,9 @@
 import { source } from '@/lib/source';
 import { createFromSource } from 'fumadocs-core/search/server';
 
-export const { GET } = createFromSource(source, {
-  // https://docs.orama.com/docs/orama-js/supported-languages
+export const revalidate = false;
+
+export const { staticGET: GET } = createFromSource(source, {
+  // Orama does not currently provide a Vietnamese tokenizer.
   language: 'english',
 });
