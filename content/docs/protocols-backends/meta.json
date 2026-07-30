@@ -8,6 +8,7 @@
     "jaeger",
     "zipkin",
     "grafana-stack",
+    "elastic-stack",
     "vendor-backends"
   ]
 }

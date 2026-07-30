@@ -1,15 +1,771 @@
 ---
-title: "Vendor backends"
-description: "Cách đánh giá backend vendor-neutral và managed."
+title: "Đánh giá vendor backends"
+description: "Framework vendor-neutral để đánh giá backend managed hoặc tự vận hành bằng scorecard, proof of concept, kiểm thử portability và exit plan."
 ---
 
-Trang này là **placeholder** cho chủ đề **Vendor backends**. Nội dung hướng dẫn, ví dụ và kiểm chứng sẽ được bổ sung sau.
+Chọn backend quan sát là chọn một hệ thống ingest, lưu trữ và điều tra incident,
+không chỉ chọn nơi vẽ dashboard. Quyết định tốt bắt đầu từ workload và ràng buộc
+của tổ chức. Sau đó, mỗi tuyên bố của ứng viên phải được kiểm chứng bằng cùng một
+telemetry corpus và cùng tiêu chí chấp nhận.
 
-## Phạm vi dự kiến
+<Callout type="warn" title="OTLP ingest chỉ là điểm bắt đầu">
+  “Nhận OTLP” có nghĩa backend cung cấp một đường ingest tương thích ở mức nào
+  đó. Nó không cam kết query language, dashboard, alert rule, sampling policy,
+  retention hoặc correlation link có cùng ngữ nghĩa với backend khác. Hãy đánh
+  giá ingest portability và analysis portability như hai lớp riêng.
+</Callout>
 
-Cách đánh giá backend vendor-neutral và managed.
+## Mục lục
 
-- Mental model và thuật ngữ cần biết.
-- Cấu hình hoặc ví dụ thực hành phù hợp.
-- Cách xác minh kết quả.
-- Failure modes, giới hạn và best practices.
+- [Ranh giới đánh giá](#ranh-giới-đánh-giá)
+  - [Backend managed và tự vận hành](#backend-managed-và-tự-vận-hành)
+  - [Ingest tương thích không đồng nghĩa truy vấn portable](#ingest-tương-thích-không-đồng-nghĩa-truy-vấn-portable)
+- [Quy trình ra quyết định](#quy-trình-ra-quyết-định)
+- [Khung đánh giá](#khung-đánh-giá)
+  - [Ingest compatibility](#ingest-compatibility)
+  - [Signal coverage và data fidelity](#signal-coverage-và-data-fidelity)
+  - [Query model và correlation](#query-model-và-correlation)
+  - [Retention và sampling](#retention-và-sampling)
+  - [Tenancy security và data residency](#tenancy-security-và-data-residency)
+  - [Reliability và service continuity](#reliability-và-service-continuity)
+  - [Cost và egress](#cost-và-egress)
+  - [Portability và exit plan](#portability-và-exit-plan)
+  - [Operational burden](#operational-burden)
+- [Scorecard và template quyết định](#scorecard-và-template-quyết-định)
+  - [Hard gates](#hard-gates)
+  - [Chấm điểm có trọng số](#chấm-điểm-có-trọng-số)
+  - [Decision record](#decision-record)
+- [Kế hoạch proof of concept](#kế-hoạch-proof-of-concept)
+  - [Telemetry corpus](#telemetry-corpus)
+  - [Acceptance tests](#acceptance-tests)
+  - [Evidence pack](#evidence-pack)
+- [Kiểm thử portability bằng Collector](#kiểm-thử-portability-bằng-collector)
+  - [Fan out cùng một telemetry](#fan-out-cùng-một-telemetry)
+  - [Routing theo policy](#routing-theo-policy)
+  - [Đọc kết quả đúng cách](#đọc-kết-quả-đúng-cách)
+- [Failure modes thường gặp](#failure-modes-thường-gặp)
+- [Thực hành chống lock in](#thực-hành-chống-lock-in)
+- [Checklist trước khi ra quyết định](#checklist-trước-khi-ra-quyết-định)
+- [Nguồn chính thức](#nguồn-chính-thức)
+- [Bài liên quan](#bài-liên-quan)
+
+## Ranh giới đánh giá
+
+Một **observability backend** là hệ thống nhận telemetry, lưu hoặc index dữ liệu,
+cung cấp query, correlation, dashboard và alert. OpenTelemetry không định nghĩa
+backend storage hay frontend visualization. Nó cung cấp data model, semantic
+conventions, SDK, Collector và OTLP để đưa dữ liệu tới nhiều loại backend.
+
+“Vendor-neutral” trong trang này là cách thiết kế quyết định và pipeline. Nó
+không phải nhãn đảm bảo một sản phẩm hoàn toàn không có lock-in. Một kiến trúc
+vendor-neutral giữ contract telemetry ở phía tổ chức, ưu tiên chuẩn mở tại ranh
+giới ingest, cô lập adapter riêng và duy trì đường thoát có thể kiểm thử.
+
+### Backend managed và tự vận hành
+
+Hai mô hình khác nhau chủ yếu ở người chịu operational burden — gánh nặng triển
+khai và vận hành hằng ngày.
+
+| Mô hình | Tổ chức thường sở hữu | Nhà cung cấp hoặc đội platform thường sở hữu | Điều vẫn phải đánh giá |
+| --- | --- | --- | --- |
+| Managed service | Instrumentation, Collector, schema, quyền truy cập và policy sử dụng | Capacity backend, upgrade storage/query service, một phần HA và support | Data residency, tenant isolation, limits, cost, egress, SLA và exit path |
+| Tự vận hành | Cả data plane lẫn control plane, capacity, upgrade, backup và on-call | Có thể chỉ có cộng đồng hoặc bên hỗ trợ phần mềm | Khả năng scale, recovery, staffing, supply chain và tổng chi phí vận hành |
+| Kết hợp | Collector và policy nội bộ; một số storage/query do dịch vụ quản lý | Phần managed đã thỏa thuận | Failure boundary, trách nhiệm giao nhau và dữ liệu đi qua từng vùng |
+
+Self-hosted không tự động portable. Nếu dashboard phụ thuộc query extension riêng,
+upgrade bị khóa hoặc export dữ liệu không bảo toàn schema, chi phí rời hệ thống
+vẫn cao. Ngược lại, managed service có thể là lựa chọn phù hợp nếu OTLP ingest,
+data ownership và exit plan được chứng minh.
+
+### Ingest tương thích không đồng nghĩa truy vấn portable
+
+Hãy tách năm lớp của tính di động:
+
+| Lớp | Câu hỏi kiểm chứng | Chuẩn OpenTelemetry giúp gì? | Phần vẫn phụ thuộc backend |
+| --- | --- | --- | --- |
+| Instrumentation | Có phải sửa code khi đổi đích không? | API, SDK và instrumentation chuẩn giảm phụ thuộc | Agent hoặc API riêng được nhúng trong code |
+| Data model | Field và ngữ nghĩa có nhất quán không? | OTLP và semantic conventions tạo vocabulary chung | Field limits, normalization, indexing và transform lúc ingest |
+| Transport và ingest | Cùng client có gửi được không? | OTLP/gRPC và OTLP/HTTP có specification chung | Endpoint, auth, quota, signal support và lỗi thực tế |
+| Query và correlation | Cùng câu hỏi có cho cùng kết quả không? | Trace/span IDs, Resource và exemplars tạo khóa nối | Query language, aggregation, join, deep link và UI semantics |
+| Operations | Dashboard, alert và runbook có chuyển được không? | Không có chuẩn OTel chung cho các artifact này | Provisioning API, rule engine, RBAC và workflow incident |
+
+Ví dụ, hai backend cùng nhận histogram OTLP. Backend A query rate từ cumulative
+points theo một cách; backend B chuẩn hóa thành storage model khác. Cùng metric
+name không đảm bảo cùng biểu thức alert hoặc cùng kết quả nếu temporality, reset,
+unit và aggregation bị xử lý khác nhau.
+
+<Callout type="idea" title="Định nghĩa portability thực dụng">
+  Một workload portable khi tổ chức có thể đổi destination mà không sửa business
+  instrumentation, vẫn bảo toàn các field quan trọng, tái tạo được câu hỏi vận
+  hành cốt lõi và hoàn thành migration trong RTO đã chấp nhận. Đổi endpoint thành
+  công mới chỉ kiểm tra phần đầu của định nghĩa này.
+</Callout>
+
+## Quy trình ra quyết định
+
+Dùng cùng quy trình cho managed, self-hosted và mô hình kết hợp:
+
+1. **Định nghĩa nhu cầu trước ứng viên.** Ghi signal, volume, cardinality, truy
+   vấn on-call, retention, region, tenant và RTO/RPO. RTO là thời gian tối đa để
+   khôi phục dịch vụ; RPO là lượng dữ liệu tối đa có thể mất tính theo thời gian.
+2. **Đặt hard gates.** Hard gate là điều kiện bắt buộc, ví dụ dữ liệu production
+   phải ở một khu vực pháp lý hoặc backend phải nhận traces, metrics và logs qua
+   OTLP với TLS.
+3. **Chốt telemetry contract.** Pin Resource attributes, semantic convention
+   version, unit, temporality, trace/log correlation fields và field nhạy cảm bị
+   cấm.
+4. **Chạy cùng một PoC.** Fan-out cùng dữ liệu tới các ứng viên. Không cho mỗi đội
+   demo một dataset hoặc câu hỏi khác nhau.
+5. **Thu evidence có thể lặp lại.** Lưu Collector config, workload generator,
+   timestamps, trace IDs, query, ảnh hoặc export kết quả và số liệu ingest.
+6. **Chấm scorecard sau PoC.** Điểm không có evidence nhận `0` hoặc trạng thái
+   `unknown`, không nhận điểm theo lời hứa roadmap.
+7. **Diễn tập exit.** Export dữ liệu mẫu, tái tạo các truy vấn SLO/incident cốt lõi
+   ở đích thứ hai và đo thời gian chuyển.
+8. **Ra quyết định có thời hạn review.** Ghi assumptions, ngoại lệ, owner và trigger
+   phải đánh giá lại, chẳng hạn volume tăng mạnh hoặc thay đổi data residency.
+
+## Khung đánh giá
+
+### Ingest compatibility
+
+Bắt đầu bằng OTLP vì đây là protocol gốc của OpenTelemetry cho traces, metrics và
+logs. “Có OTLP endpoint” chưa đủ; hãy kiểm tra:
+
+- OTLP/gRPC, OTLP/HTTP binary Protobuf hoặc cả hai;
+- endpoint, port, path theo signal và khả năng đi qua proxy/firewall hiện có;
+- TLS, mTLS, CA riêng, certificate rotation và phương thức auth;
+- signal nào được nhận trực tiếp, signal nào phải qua gateway hoặc API khác;
+- gzip, request-size limit, concurrency, timeout và throttling;
+- OTLP partial success, retryable/non-retryable errors và `Retry-After`;
+- quota theo tenant, region và signal;
+- field/type/length limits, attribute normalization và reserved namespaces;
+- phiên bản Collector/exporter được hỗ trợ và quy trình compatibility test.
+
+Ví dụ kiểm chứng: gửi một batch có spans hợp lệ và một record vượt giới hạn đã
+công bố. Client phải quan sát đúng success, partial success hoặc lỗi. Sau đó xác
+minh số record truy vấn được, thay vì chỉ nhìn HTTP status hoặc gRPC code.
+
+Nếu phải dùng exporter riêng của backend, ghi rõ lý do. Có thể backend chưa hỗ
+trợ một signal qua OTLP hoặc cần API bổ sung. Cô lập exporter đó trong Collector;
+đừng để credential và endpoint riêng lan vào mọi service.
+
+### Signal coverage và data fidelity
+
+**Data fidelity** là mức dữ liệu giữ nguyên hình dạng và ý nghĩa sau ingest.
+Kiểm tra từng signal bằng field cụ thể:
+
+| Signal | Corpus cần có | Điều phải so sau ingest |
+| --- | --- | --- |
+| Traces | Parent-child spans, links, events, status, attributes, dropped counts | Trace/span ID, topology, timestamps, span kind, events, links và Resource |
+| Metrics | Sum, gauge, histogram, exponential histogram, exemplars và resets | Unit, temporality, monotonicity, boundaries, count/sum, attributes và exemplar IDs |
+| Logs | String/body có cấu trúc, severity, event name, attributes và active trace context | Timestamp, observed timestamp, body type, severity, trace/span IDs và Resource |
+
+Profiles phải được đánh giá như một signal riêng vì mức ổn định của specification
+và hỗ trợ backend có thể khác traces, metrics và logs. Không cộng điểm profiles
+vào “hỗ trợ đủ signal” nếu workload chưa dùng hoặc ingest path vẫn experimental.
+
+Một backend có thể nhận record nhưng bỏ field không index, đổi metric temporality
+hoặc làm phẳng structured log body. PoC phải so raw payload tại Collector với
+normalized/query view ở backend. Chốt danh sách **must-preserve fields** trước khi
+chạy test.
+
+### Query model và correlation
+
+**Query model** là cách backend biểu diễn và truy vấn dữ liệu: time series,
+event/log record, trace graph, index và các phép aggregation. OpenTelemetry không
+chuẩn hóa một query language dùng chung cho mọi backend.
+
+Dùng các câu hỏi vận hành thật làm benchmark:
+
+1. Tính error rate và latency percentile theo `service.name`, environment và
+   route với unit đúng.
+2. Từ một exemplar mở exact trace ID.
+3. Từ span lỗi tìm logs có cùng `trace_id` và `span_id`.
+4. Từ log mở trace và giữ đúng tenant cùng time range.
+5. Lọc deployment version gây regression mà không quét toàn bộ dữ liệu.
+6. Phân biệt “không có dữ liệu” với giá trị bằng không hoặc query lỗi.
+
+Chấm riêng **query correctness**, **query latency** và **query ergonomics**. UI dễ
+dùng không bù được kết quả sai. Query nhanh trên dataset nhỏ cũng không chứng minh
+hiệu năng ở cardinality và retention production.
+
+Correlation cần test đường `metric exemplar → trace → span → log`. Nếu backend
+chỉ tạo deep link bằng timestamp, đó là tìm kiếm gần đúng. Correlation chắc chắn
+nên dùng exact IDs và Resource filters; timestamp chỉ thu hẹp cửa sổ.
+
+### Retention và sampling
+
+**Retention** là thời gian dữ liệu còn truy vấn hoặc phục hồi được. Hỏi riêng cho
+mỗi signal và mỗi tier:
+
+- raw, indexed, downsampled và archived data còn bao lâu;
+- thay đổi retention áp dụng hồi tố hay chỉ cho dữ liệu mới;
+- xóa theo tenant, user hoặc legal request diễn ra ở primary, replica và backup;
+- correlation còn hoạt động không khi metrics sống lâu hơn traces;
+- query trên archive có cùng schema và latency hay cần restore;
+- giới hạn export trước khi dữ liệu hết retention.
+
+**Sampling** chọn một phần dữ liệu để giữ hoặc xử lý. Phân biệt head sampling ở
+SDK, tail sampling trong Collector/backend và query-time approximation. Với tail
+sampling, kiểm tra policy, decision wait, memory/state, late spans và cách xử lý
+trace không hoàn chỉnh. Không để hai backend trong PoC áp policy sampling khác
+nhau rồi so coverage như thể input giống nhau.
+
+Bài test cụ thể: tạo 100 trace với tỷ lệ error và latency đã biết, ghi lại toàn bộ
+trace IDs trước sampling, rồi tính tỷ lệ giữ theo từng policy. Xác minh trace lỗi
+được giữ, trace bình thường được lấy mẫu đúng kỳ vọng và metrics không bị suy ra
+sai từ tập trace đã sampled.
+
+### Tenancy security và data residency
+
+**Tenancy** là cách hệ thống cô lập dữ liệu, quota và quyền giữa đội, môi trường
+hoặc khách hàng. Đánh giá cả control plane lẫn data plane:
+
+- tenant/project được chọn từ endpoint, credential hay metadata nào;
+- workload identity, token scope và credential rotation;
+- RBAC hoặc ABAC cho ingest, query, dashboard, alert và administration;
+- khả năng một tenant query, export hoặc suy ra dữ liệu tenant khác;
+- encryption in transit, at rest và key ownership/rotation;
+- audit log cho truy cập, cấu hình, export và xóa;
+- PII, secret, payload body và metadata nhạy cảm được redaction ở đâu;
+- retention, legal hold và deletion workflow;
+- data residency của ingest, storage, index, replica, backup, support bundle và
+  diagnostic telemetry;
+- subprocessor và cross-region failover có làm dữ liệu rời vùng đã cam kết không.
+
+Data residency không chỉ là vị trí endpoint. Nếu Collector gửi tới endpoint EU
+nhưng backend replicate sang vùng khác hoặc support bundle ra ngoài vùng, yêu cầu
+có thể vẫn bị vi phạm. Yêu cầu data-flow diagram và bằng chứng contract/kỹ thuật,
+không suy luận từ hostname.
+
+<Callout type="error" title="Đừng route theo dữ liệu không tin cậy">
+  Nếu data residency phụ thuộc một Resource attribute do ứng dụng tự khai báo,
+  caller sai hoặc độc hại có thể chọn nhầm region. Thuộc tính routing phải được
+  allowlist, xác minh hoặc gắn tại Collector nằm trong trust boundary. Network
+  path tới Collector cũng phải tuân thủ residency trước khi routing diễn ra.
+</Callout>
+
+### Reliability và service continuity
+
+Đánh giá đường từ receiver đến query, không chỉ uptime của UI:
+
+- availability objective cho ingest, query, alert evaluation và API export;
+- RTO, RPO, maintenance, status communication và support escalation;
+- failure domain theo zone/region và hành vi cross-region failover;
+- backpressure, rate limit, partial success và retry contract;
+- giới hạn ingest lag từ lúc phát sinh đến lúc query được;
+- duplicate handling khi client retry mà không nhận acknowledgement;
+- queue, persistent storage, replay và dead-letter strategy;
+- backup/restore và diễn tập disaster recovery;
+- internal telemetry để biết accepted, rejected, dropped và queued records.
+
+Collector queue giảm mất dữ liệu khi backend chậm, nhưng queue hữu hạn. In-memory
+queue mất khi process crash. Persistent queue còn phụ thuộc disk, retry window và
+capacity. OTLP chỉ mô tả acknowledgement giữa một cặp client/server; nó không
+cam kết exactly-once hoặc end-to-end delivery qua mọi hop.
+
+### Cost và egress
+
+Không so bằng giá niêm yết tại một thời điểm. Trước hết, xác định **cost unit** —
+đơn vị tính phí thực tế — rồi đo trên workload cố định:
+
+- bytes nhận trước hay sau compression;
+- số span, data point, log record, sample hoặc active time series;
+- indexed fields, cardinality, query scan và dashboard refresh;
+- retention tier, restore, API usage và alert evaluation;
+- network egress vào, ra, cross-region và khi export để rời dịch vụ;
+- minimum commit, burst/overage và cách phân bổ chi phí theo tenant;
+- chi phí Collector, queue, object storage, nhân sự và on-call đối với mô hình tự
+  vận hành.
+
+Tạo ba profile `baseline`, `burst` và `backend outage`. Đo cùng volume logic,
+compression, retry và retention. Outage có thể tạo retry hoặc duplicate, vì vậy
+hãy kiểm tra liệu chúng được tính phí và deduplicate thế nào.
+
+Chi phí thoát là một phần của exit plan. Ghi volume phải export, throughput API,
+phí egress, thời gian dự kiến và nhân lực chuyển query/dashboard. Một backend rẻ
+khi ingest nhưng đắt để rời vẫn là rủi ro tài chính.
+
+### Portability và exit plan
+
+Exit plan phải trả lời bằng một bài diễn tập, không phải câu “dữ liệu thuộc về
+khách hàng”. Kiểm tra:
+
+- đổi OTLP destination mà không sửa business code;
+- export bulk và incremental theo signal, time range và tenant;
+- format export có công khai, có giữ Resource, IDs, timestamps và metric semantics;
+- rate limit, pagination, checksum, resume và thời gian hoàn tất export;
+- quyền truy cập export sau khi chấm dứt hợp đồng;
+- replay vào backend khác mà không tạo duplicate hoặc sai temporality;
+- mapping query, dashboard, alert, RBAC, SLO và deep links;
+- khoảng dual-write, tiêu chí cutover và rollback;
+- cách chứng minh xóa bản cũ sau migration.
+
+Dashboards-as-code làm artifact dễ version control, nhưng không tự chuẩn hóa
+query semantics. Nếu dashboard JSON chứa function riêng của backend, file đó vẫn
+không portable. Duy trì một catalog câu hỏi logic, input fields, unit và expected
+result; sau đó mới viết adapter query cho từng backend.
+
+### Operational burden
+
+Đo công việc cần thiết mỗi tháng và khi incident, không chỉ thời gian cài lần đầu:
+
+- capacity planning, sharding, compaction, storage và index tuning;
+- upgrade, schema migration, backup/restore và certificate rotation;
+- on-call, runbook, support và kỹ năng tuyển dụng;
+- quản trị tenant, quota, RBAC và audit;
+- theo dõi Collector, ingest lag, queue, query latency và cost anomaly;
+- kiểm thử compatibility khi SDK, semantic conventions hoặc Collector đổi phiên
+  bản;
+- thời gian từ yêu cầu dashboard/alert đến production an toàn.
+
+Managed service thường giảm gánh nặng storage và upgrade backend. Nó không loại
+bỏ schema governance, Collector operations, access review, cost control hoặc
+exit testing. Với self-hosted, ghi rõ team nào sở hữu từng failure domain và có
+capacity on-call thực tế hay không.
+
+## Scorecard và template quyết định
+
+### Hard gates
+
+Hard gate là tiêu chí không được bù bằng điểm cao ở mục khác. Template ban đầu:
+
+- [ ] Tất cả signal bắt buộc ingest được qua đường đã phê duyệt.
+- [ ] Data residency gồm primary, replica, backup và support workflow đạt yêu cầu.
+- [ ] TLS và phương thức xác thực phù hợp; credential có scope và rotation.
+- [ ] Tenant isolation vượt qua negative test.
+- [ ] Must-preserve fields còn nguyên sau ingest.
+- [ ] RTO/RPO và support escalation được chấp nhận.
+- [ ] Có data export path cùng điều khoản truy cập khi kết thúc dịch vụ.
+- [ ] Ước tính cost ở baseline, burst và outage nằm trong budget guardrail.
+
+Một ứng viên trượt hard gate phải được loại hoặc có exception do đúng authority
+phê duyệt. Đừng tăng điểm “trải nghiệm UI” để bù vi phạm residency.
+
+### Chấm điểm có trọng số
+
+Dùng thang điểm có định nghĩa:
+
+| Điểm | Ý nghĩa | Evidence tối thiểu |
+| --- | --- | --- |
+| 0 | Không hỗ trợ, không kiểm thử được hoặc chưa có evidence | Không có kết quả lặp lại |
+| 1 | Chỉ đáp ứng bằng workaround rủi ro cao | Demo thủ công hoặc phụ thuộc roadmap |
+| 2 | Đáp ứng một phần, có giới hạn đáng kể | Test qua nhưng còn ngoại lệ chưa xử lý |
+| 3 | Đáp ứng requirement hiện tại | PoC lặp lại được và tài liệu vận hành rõ |
+| 4 | Đáp ứng tốt, có guardrail và automation | Test CI/runbook, telemetry nội bộ và owner |
+| 5 | Vượt requirement bằng năng lực đã kiểm chứng cần thiết | Evidence production-like, không phải tính năng thừa |
+
+Bộ trọng số khởi đầu dưới đây tổng bằng 100. Hãy đổi **trước khi biết điểm ứng
+viên** để tránh điều chỉnh trọng số nhằm hợp thức hóa lựa chọn đã có.
+
+| Tiêu chí | Trọng số gợi ý | Evidence PoC | Ứng viên A | Ứng viên B |
+| --- | ---: | --- | ---: | ---: |
+| Ingest compatibility | 12 | Matrix protocol/transport/auth/error |  |  |
+| Signal coverage và fidelity | 12 | Diff raw payload với query view |  |  |
+| Query model | 10 | Query correctness và latency |  |  |
+| Correlation | 10 | Exemplar → trace → log |  |  |
+| Retention và sampling | 10 | Policy test và trace census |  |  |
+| Tenancy | 7 | Positive/negative isolation tests |  |  |
+| Security và data residency | 11 | Data-flow evidence và access tests |  |  |
+| Reliability | 8 | Outage, retry, queue và recovery test |  |  |
+| Cost và egress | 8 | Đo baseline/burst/outage/exit |  |  |
+| Portability và exit plan | 8 | Export/replay và query migration drill |  |  |
+| Operational burden | 4 | RACI, runbook và effort estimate |  |  |
+
+Với mỗi hàng, tính `điểm quy đổi = trọng số × điểm / 5`. Tổng tối đa là 100.
+Kèm confidence `high`, `medium` hoặc `low`; hai tổng điểm gần nhau nhưng một bên
+có evidence yếu không phải kết quả hòa.
+
+### Decision record
+
+Lưu quyết định dưới dạng code để review được. Template này không chứa thông tin
+vendor hoặc giá dễ lỗi thời:
+
+```yaml
+decision:
+  title: "Backend cho production telemetry"
+  status: proposed
+  owner: "observability-platform"
+  review_date: "YYYY-MM-DD"
+
+scope:
+  environments: [production]
+  signals: [traces, metrics, logs]
+  expected_volume_profile: "link-to-versioned-workload-model"
+  telemetry_contract: "link-to-schema-and-semconv-version"
+
+hard_gates:
+  - id: residency
+    requirement: "Dữ liệu và bản sao chỉ ở vùng được phê duyệt"
+    evidence: "link-to-data-flow-and-test"
+    result: pass
+  - id: exit
+    requirement: "Bulk export giữ must-preserve fields"
+    evidence: "link-to-replay-report"
+    result: pass
+
+scorecard:
+  weights_version: v1
+  evidence_pack: "link-to-poc-artifacts"
+  candidate_a_score: null
+  candidate_b_score: null
+  confidence: null
+
+migration:
+  dual_write_window: "defined-by-volume-and-risk"
+  cutover_checks: "link-to-checklist"
+  rollback_trigger: "query-correctness-or-ingest-slo-breach"
+
+exit_plan:
+  destination_contract: OTLP
+  data_export_method: "documented-and-tested"
+  dashboard_query_mapping: "link-to-catalog"
+  owner: "observability-platform"
+  last_drill: "YYYY-MM-DD"
+
+risks:
+  - description: ""
+    mitigation: ""
+    owner: ""
+```
+
+## Kế hoạch proof of concept
+
+### Telemetry corpus
+
+Dùng một hệ thống lab nhỏ có hai service, ví dụ `checkout` gọi `payment`. Corpus
+— tập dữ liệu kiểm thử cố định — nên có:
+
+- trace thành công, trace lỗi, trace chậm, span events, links và baggage được
+  allowlist;
+- metric counter, gauge, histogram, exponential histogram nếu cần và exemplar;
+- structured log có severity, timestamp, observed timestamp, trace ID và span ID;
+- Resource ổn định gồm `service.name`, version và environment;
+- HTTP/RPC attributes theo semantic convention version đã pin;
+- một vài attributes không index, Unicode, giá trị dài và record gần size limit;
+- baseline traffic, burst có kiểm soát và một khoảng backend unavailable;
+- payload nhạy cảm giả để kiểm tra redaction, không dùng dữ liệu người thật.
+
+Metric attributes chỉ dùng cardinality có kiểm soát. Không gắn ID duy nhất của
+mỗi run vào metric dimension. Với traces/logs, lưu danh sách trace IDs và marker
+PoC được phép để đối chiếu exact record.
+
+### Acceptance tests
+
+| Nhóm test | Hành động | Kết quả chấp nhận |
+| --- | --- | --- |
+| Ingest | Gửi OTLP/gRPC và OTLP/HTTP qua cùng Collector | Auth, TLS, compression và lỗi đúng contract; canary query được |
+| Fidelity | So raw/debug capture được kiểm soát với backend view | Must-preserve fields, units, IDs và timestamps không sai nghĩa |
+| Query | Chạy catalog câu hỏi incident/SLO | Kết quả đúng trên dataset biết trước; latency đạt objective |
+| Correlation | Đi exemplar → trace → span → log và chiều ngược lại | Exact IDs, đúng tenant, đúng Resource và time range |
+| Sampling | Gửi trace census đã biết qua policy | Tỷ lệ và điều kiện giữ đúng; late/incomplete trace có hành vi rõ |
+| Tenancy | Dùng credential tenant A query/export tenant B | Bị từ chối và có audit evidence; không lộ metadata |
+| Residency | Theo dõi mọi hop, replica, backup và support path | Không có đường dữ liệu ngoài vùng phê duyệt |
+| Reliability | Chặn backend rồi phục hồi | Queue/retry/drop được quan sát; đích khác không bị che lỗi |
+| Cost | Chạy baseline, burst và outage với volume cố định | Cost units đối chiếu được với usage report và budget model |
+| Exit | Export một time range rồi replay/query ở đích thứ hai | Fields cốt lõi và câu hỏi vận hành được tái tạo trong RTO |
+
+Test cả đường âm. Ví dụ: token hết hạn phải tạo non-retryable auth error thay vì
+retry đến đầy queue; record sai tenant phải bị chặn; attribute routing thiếu phải
+đi theo policy fail-closed đã thiết kế.
+
+### Evidence pack
+
+Mỗi lần chạy PoC tạo một thư mục artifact logic gồm:
+
+```text
+poc-evidence/
+├── workload-version.txt
+├── telemetry-contract.yaml
+├── collector-config-redacted.yaml
+├── expected-trace-ids.txt
+├── expected-metrics.yaml
+├── queries/
+├── query-results/
+├── outage-timeline.md
+├── usage-and-egress.csv
+├── scorecard.yaml
+└── exit-drill.md
+```
+
+Không lưu token, certificate private key hoặc payload nhạy cảm thật. Ghi version
+SDK, Collector distribution, exporter, semantic conventions và backend region.
+Nếu không thể lặp lại một kết quả từ evidence pack, không dùng kết quả đó để chấm
+điểm cao.
+
+## Kiểm thử portability bằng Collector
+
+Collector tạo ranh giới để đổi exporter mà không sửa ứng dụng. Nó cũng cho phép
+fan-out và routing trong PoC. Hai pattern này phục vụ kiểm thử; chúng không tự
+biến backend thành portable.
+
+### Fan out cùng một telemetry
+
+Fan-out gửi dữ liệu từ một pipeline đến nhiều exporter. Mẫu dưới đây dùng tên
+component `otlp_grpc` và `otlp_http` theo convention của project và tài liệu
+Collector hiện hành. Distribution phải chứa đúng components; kiểm tra bằng
+`otelcol components` và validate bằng binary thực tế.
+
+```yaml
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 127.0.0.1:4317
+      http:
+        endpoint: 127.0.0.1:4318
+
+processors:
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 512
+    spike_limit_mib: 128
+  batch: {}
+
+exporters:
+  otlp_grpc/candidate_a:
+    endpoint: "${env:CANDIDATE_A_OTLP_GRPC_ENDPOINT}"
+    headers:
+      authorization: "${env:CANDIDATE_A_AUTHORIZATION}"
+    sending_queue: {}
+    retry_on_failure: {}
+
+  otlp_http/candidate_b:
+    endpoint: "${env:CANDIDATE_B_OTLP_HTTP_ENDPOINT}"
+    headers:
+      authorization: "${env:CANDIDATE_B_AUTHORIZATION}"
+    sending_queue: {}
+    retry_on_failure: {}
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [otlp_grpc/candidate_a, otlp_http/candidate_b]
+    metrics:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [otlp_grpc/candidate_a, otlp_http/candidate_b]
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [otlp_grpc/candidate_a, otlp_http/candidate_b]
+```
+
+Endpoint gRPC thường có dạng `host:443`; endpoint HTTP thường có scheme như
+`https://host`. Header auth chỉ là ví dụ contract chung. Hãy đổi tên header hoặc
+dùng authenticator extension theo backend, nhưng giữ secret ở runtime và không
+commit vào file.
+
+`exporters` có queue và retry riêng giúp một đích chậm ít ảnh hưởng đích còn lại
+hơn. Tuy vậy, queue hữu hạn. Khi hết retry window hoặc đầy queue, dữ liệu vẫn có
+thể bị drop. Tuning phải dựa trên volume, memory/disk và outage budget; không sao
+chép giá trị PoC vào production.
+
+<Callout type="warn" title="Fan out không phải giao dịch hai pha">
+  Hai backend không commit atomically. A có thể nhận trong khi B retry hoặc drop.
+  OTLP cũng cho phép resend sau mất acknowledgement, nên duplicate có thể xuất
+  hiện. So sánh theo canary IDs, accepted/rejected counts và time window; đừng
+  đòi số record luôn bằng nhau mà không giải thích sampling, retry và ingest lag.
+</Callout>
+
+### Routing theo policy
+
+Routing gửi các tập record khác nhau đến pipeline đích dựa trên điều kiện. Ví dụ
+khái niệm sau giữ traces mặc định ở backend EU và chỉ gửi workload có policy
+`global` tới backend toàn cầu:
+
+```yaml
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 127.0.0.1:4317
+
+processors:
+  batch: {}
+
+exporters:
+  otlp_grpc/eu:
+    endpoint: "${env:EU_OTLP_GRPC_ENDPOINT}"
+    headers:
+      authorization: "${env:EU_AUTHORIZATION}"
+    sending_queue: {}
+    retry_on_failure: {}
+
+  otlp_grpc/global:
+    endpoint: "${env:GLOBAL_OTLP_GRPC_ENDPOINT}"
+    headers:
+      authorization: "${env:GLOBAL_AUTHORIZATION}"
+    sending_queue: {}
+    retry_on_failure: {}
+
+connectors:
+  routing/residency:
+    default_pipelines: [traces/eu]
+    table:
+      - condition: 'resource.attributes["com.example.telemetry.residency"] == "global"'
+        pipelines: [traces/global]
+
+service:
+  pipelines:
+    traces/in:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [routing/residency]
+    traces/eu:
+      receivers: [routing/residency]
+      exporters: [otlp_grpc/eu]
+    traces/global:
+      receivers: [routing/residency]
+      exporters: [otlp_grpc/global]
+```
+
+Routing connector dùng OTTL — OpenTelemetry Transformation Language — để đánh
+giá điều kiện. Tại thời điểm viết, component này có mức ổn định alpha cho traces,
+metrics và logs trong các distribution được liệt kê ở README. Vì vậy:
+
+- pin Collector distribution/version và chạy compatibility tests khi nâng cấp;
+- validate pipeline names vì chúng là target của `default_pipelines` và `table`;
+- tạo policy mặc định bảo thủ khi attribute thiếu hoặc condition lỗi;
+- gắn attribute residency ở trust boundary, không tin giá trị tùy ý từ app;
+- đặt Collector ở vùng hợp lệ vì routing không thu hồi network hop đã xảy ra;
+- tạo pipeline và test riêng cho metrics/logs nếu routing cả ba signal.
+
+Nếu chỉ cần so hai backend trên cùng input, fan-out đơn giản hơn routing. Chỉ dùng
+routing khi có policy thật như tenant, region, signal hoặc data class.
+
+### Đọc kết quả đúng cách
+
+Collector fan-out kiểm tra được ba điều:
+
+1. Cùng telemetry rời một ranh giới chung.
+2. Mỗi exporter có lỗi, queue và latency quan sát được riêng.
+3. Ứng dụng không phải đổi instrumentation để thêm đích.
+
+Nó không chứng minh hai backend có cùng storage semantics. Sau fan-out, phải chạy
+cùng acceptance queries và so:
+
+- record counts sau khi giải thích sampling/drop/duplicate;
+- must-preserve fields và type;
+- metric unit, temporality, histogram và reset;
+- trace graph, events, links và status;
+- log body, severity, timestamp và trace fields;
+- exemplar, deep link và tenant boundary;
+- query result, latency và scanned/cost unit.
+
+Gỡ fan-out sau PoC hoặc quản lý nó như migration window có owner. Dual-write kéo
+dài làm tăng egress, ingest cost, secret surface và số failure modes.
+
+## Failure modes thường gặp
+
+| Triệu chứng | Nguyên nhân khả dĩ | Cách kiểm chứng | Mitigation |
+| --- | --- | --- | --- |
+| OTLP request thành công nhưng thiếu record | Partial success, field limit, sampling hoặc async ingest lag | Đọc response/internal telemetry; query bằng canary IDs | Alert rejected counts; kiểm tra limit và sampling |
+| Traces có nhưng metrics hoặc logs trống | Endpoint/signal chưa hỗ trợ hoặc pipeline thiếu exporter | Canary từng signal; xem Collector pipeline | Không suy luận support từ một signal |
+| Hai backend có percentile khác nhau | Unit, temporality, histogram conversion hoặc query khác | So raw points và phép aggregation | Chuẩn hóa contract; viết query acceptance test |
+| Log mở sai trace | Field mapping, tenant hoặc time window sai | Query exact trace/span IDs và Resource | Sửa mapping và correlation contract |
+| Backend B chậm làm queue đầy | Rate limit/outage kéo dài hơn capacity | Queue size/capacity, retry và dropped metrics | Queue theo đích; capacity plan; WAL khi cần |
+| Dữ liệu duplicate sau outage | Retry sau khi acknowledgement bị mất | So trace IDs/timestamps và exporter timeline | Thiết kế query chịu duplicate; theo dõi replay |
+| Routing đưa dữ liệu sai region | Attribute thiếu, giả mạo hoặc condition lỗi | Negative tests và audit route counts | Fail-closed; enrich tại trusted Collector |
+| Credential tenant A ghi vào tenant B | Secret hoặc header mapping sai | Canary unique theo tenant; access test | Scope token; config review; isolation test |
+| Export data không replay được | Format mất schema, IDs hoặc metric semantics | Export sớm rồi ingest vào đích lab | Đưa replay vào hard gate và diễn tập định kỳ |
+| Dashboard-as-code không import được | Artifact chứa query/function riêng | Inventory functions và chạy mapping test | Duy trì catalog câu hỏi logic cùng adapters |
+| Cost PoC thấp hơn production | Dataset quá nhỏ, thiếu burst/cardinality/query | Chạy ba profile trên model versioned | Sensitivity analysis và budget alert |
+| Self-hosted mất dữ liệu khi upgrade | Migration/backup chưa được diễn tập | Restore và rolling-upgrade test | Pin version, backup, rollback và RPO owner |
+| Managed failover vi phạm residency | Replica/support path nằm ngoài vùng | Data-flow và contract evidence | Hard gate vùng; disable path không hợp lệ |
+| Collector config không khởi động sau upgrade | Component đổi tên, không có trong distribution hoặc alpha change | `otelcol components` và `validate` trong CI | Pin distribution; compatibility test trước rollout |
+
+## Thực hành chống lock in
+
+**Lock-in** là chi phí kỹ thuật, dữ liệu, quy trình hoặc hợp đồng khiến việc đổi
+hệ thống khó hơn mức chấp nhận. Không thể xóa hoàn toàn lock-in; mục tiêu là nhìn
+thấy, giới hạn và diễn tập nó.
+
+- **Giữ business instrumentation độc lập.** Dùng OpenTelemetry API/SDK và
+  semantic conventions. Cô lập API riêng của backend trong adapter có owner.
+- **Ưu tiên OTLP tại ranh giới.** Ứng dụng gửi tới Collector do tổ chức kiểm soát
+  khi topology cho phép. Backend credentials dừng ở gateway, không đi vào app.
+- **Sở hữu telemetry contract.** Version Resource keys, units, custom attributes,
+  data classification và must-preserve fields trong repository.
+- **Pin semantic convention version.** Migration schema phải có dual-read hoặc
+  mapping test; tên chuẩn thay đổi không nên âm thầm phá dashboard.
+- **Tách câu hỏi khỏi cú pháp query.** Catalog định nghĩa câu hỏi, input, unit,
+  aggregation và expected result. Query riêng của backend là adapter.
+- **Quản lý dashboard và alert như code.** Version control giúp audit và tái tạo,
+  nhưng vẫn phải inventory function không portable.
+- **Không ghi deep link vendor vào telemetry.** Tạo link template ở UI hoặc
+  correlation gateway dựa trên trace/span IDs.
+- **Duy trì Collector fan-out test.** Chạy định kỳ trên corpus nhỏ để biết đích dự
+  phòng còn ingest và bảo toàn contract.
+- **Diễn tập export và replay.** Kiểm checksum, pagination, resume, field fidelity,
+  throughput và egress; không chờ đến ngày chấm dứt dịch vụ.
+- **Giới hạn proprietary features có chủ đích.** Feature đem lại giá trị vẫn có
+  thể dùng, nhưng ghi owner, dependency, migration cost và fallback.
+- **Giữ dữ liệu đủ để thoát.** Nếu dùng archive trung lập, ghi rõ format, schema,
+  encryption, retention và replay tool. Object storage đơn thuần không bảo đảm
+  replay đúng.
+- **Đàm phán exit ở cấp contract.** Quyền export, thời gian truy cập sau chấm dứt,
+  support, deletion evidence, rate limit và egress phải rõ trước khi cần dùng.
+- **Đặt review triggers.** Đánh giá lại khi volume, region, compliance, query
+  pattern, staffing hoặc backend architecture thay đổi đáng kể.
+
+<Callout type="idea" title="Anti-lock-in không có nghĩa dùng mẫu số chung thấp nhất">
+  Bạn có thể dùng năng lực riêng có giá trị. Hãy làm vậy sau khi định lượng lợi
+  ích, cô lập dependency và có fallback. Tránh lock-in vô thức, không tránh mọi
+  khác biệt giữa sản phẩm.
+</Callout>
+
+## Checklist trước khi ra quyết định
+
+- [ ] Requirements và trọng số được chốt trước khi xem điểm ứng viên.
+- [ ] Hard gates có owner, evidence và authority phê duyệt exception.
+- [ ] Cùng telemetry corpus và Collector config được dùng cho mọi ứng viên.
+- [ ] OTLP/gRPC và OTLP/HTTP được test theo network path thực tế cần dùng.
+- [ ] Traces, metrics và logs có acceptance test độc lập.
+- [ ] Must-preserve fields được diff từ Collector tới query view.
+- [ ] Query correctness được kiểm trên dataset có expected result.
+- [ ] Correlation exemplar → trace → log hoạt động bằng exact IDs.
+- [ ] Retention, sampling và deletion được kiểm theo từng signal/tier.
+- [ ] Tenant isolation có negative test, không chỉ review RBAC UI.
+- [ ] Data residency bao gồm replica, backup, failover và support diagnostics.
+- [ ] Outage test cho thấy queue, retry, drop và recovery quan sát được.
+- [ ] Cost model gồm baseline, burst, outage, query, retention và egress.
+- [ ] Operational burden có RACI, staffing, runbook và upgrade/restore test.
+- [ ] Bulk export và replay đã chạy; không chỉ đọc tài liệu.
+- [ ] Dashboard, alert và query dependencies riêng đã được inventory.
+- [ ] Cutover, rollback, dual-write window và success criteria đã có owner.
+- [ ] Decision record chứa assumptions, confidence, review date và exit owner.
+
+## Nguồn chính thức
+
+- [OpenTelemetry là gì](https://opentelemetry.io/docs/what-is-opentelemetry/) —
+  OpenTelemetry vendor-agnostic nhưng không phải backend storage/visualization.
+- [OTLP Specification](https://opentelemetry.io/docs/specs/otlp/) — protocol,
+  transports, partial success, retry, throttling, multi-destination và duplicate.
+- [Collector configuration](https://opentelemetry.io/docs/collector/configuration/) —
+  component IDs, pipelines, OTLP exporters, authentication và TLS.
+- [Collector resiliency](https://opentelemetry.io/docs/collector/resiliency/) —
+  sending queue, retry, persistent storage và các trường hợp mất dữ liệu.
+- [OpenTelemetry security](https://opentelemetry.io/docs/security/) — bảo vệ dữ
+  liệu nhạy cảm, chống tampering, DoS và hướng dẫn bảo mật Collector.
+- [OpenTelemetry semantic conventions](https://opentelemetry.io/docs/specs/semconv/) —
+  vocabulary chung cho Resource và signal data.
+- [Routing connector](https://github.com/open-telemetry/opentelemetry-collector-contrib/tree/main/connector/routingconnector) —
+  cấu hình OTTL, default pipelines, limitations và mức ổn định hiện hành.
+- [W3C Trace Context](https://www.w3.org/TR/trace-context/) — format chuẩn để giữ
+  trace context qua service boundaries.
+
+## Bài liên quan
+
+<Cards>
+  <Card title="OTLP" href="/protocols-backends/otlp/" description="Hiểu data model, delivery và response trước khi đánh giá ingest." />
+  <Card title="OTLP gRPC và OTLP HTTP" href="/protocols-backends/otlp-grpc-http/" description="Chọn và kiểm thử transport, endpoint, headers và TLS." />
+  <Card title="Cấu hình Collector" href="/collector/configuration/" description="Validate components, secrets và service pipelines." />
+  <Card title="Service pipelines" href="/collector/pipelines/" description="Thiết kế fan-out, failure boundaries và đường đi từng signal." />
+  <Card title="Signal correlation" href="/signals/correlation/" description="Kiểm chứng exemplar, trace IDs, logs và Resource nhất quán." />
+  <Card title="Sampling" href="/signals/sampling/" description="Phân biệt head, tail và tác động của sampling lên coverage." />
+  <Card title="Production security" href="/production/security/" description="Áp dụng threat model, access control và redaction cho telemetry." />
+</Cards>
