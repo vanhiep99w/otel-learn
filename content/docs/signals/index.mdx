@@ -192,8 +192,9 @@ Sau chặng này, bạn nên chọn được instrument cho request count, laten
 
 6. [Exemplars](/signals/exemplars/) nối một phép đo metric đại diện với trace hoặc span liên quan.
 7. [Signal correlation](/signals/correlation/) hệ thống hóa `trace_id`, `span_id`, resource và correlation workflow.
+8. [Sentry và OpenTelemetry](/signals/sentry-opentelemetry-correlation/) áp dụng correlation để đi từ lỗi Frontend tới đúng Backend trace và span.
 
-Đây là chặng biến ba kho dữ liệu riêng thành một quy trình điều tra. Kết quả cần đạt là đi từ alert tới đúng request mà không phải đoán thủ công bằng timestamp.
+Đây là chặng biến các kho dữ liệu riêng thành một quy trình điều tra. Kết quả cần đạt là đi từ alert hoặc Sentry error tới đúng request mà không phải đoán thủ công bằng timestamp.
 
 ## Scenario điều tra: từ metric đến nguyên nhân
 
@@ -307,4 +308,5 @@ Series hiện tại chưa có bài riêng về Profiles. Khi cần dùng, hãy k
   <Card title="Logs" href="/signals/logs/" description="Thiết kế structured logs và liên kết log với trace." />
   <Card title="Exemplars" href="/signals/exemplars/" description="Đi từ metric data point tới trace hoặc span đại diện." />
   <Card title="Signal correlation" href="/signals/correlation/" description="Kết hợp trace ID, span ID và resource trong điều tra sự cố." />
+  <Card title="Sentry và OpenTelemetry" href="/signals/sentry-opentelemetry-correlation/" description="Đi từ lỗi Frontend trong Sentry tới đúng Backend trace và span." />
 </Cards>

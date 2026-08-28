@@ -8,6 +8,7 @@
     "metrics",
     "logs",
     "exemplars",
-    "correlation"
+    "correlation",
+    "sentry-opentelemetry-correlation"
   ]
 }

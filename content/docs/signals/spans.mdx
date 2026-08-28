@@ -17,6 +17,7 @@ description: "Hiểu span như một operation trong OpenTelemetry, từ SpanCon
   - [Một span chứa những gì](#một-span-chứa-những-gì)
 - [SpanContext giữ định danh cho propagation](#spancontext-giữ-định-danh-cho-propagation)
   - [Năm thành phần cần biết](#năm-thành-phần-cần-biết)
+  - [Trace ID và span ID được sinh như thế nào](#trace-id-và-span-id-được-sinh-như-thế-nào)
   - [Local context và remote context](#local-context-và-remote-context)
 - [Tên thời gian và quan hệ cha con](#tên-thời-gian-và-quan-hệ-cha-con)
   - [Name start end và duration](#name-start-end-và-duration)
@@ -156,6 +157,158 @@ quán theo parent.
   đăng nhập hoặc được cấp quyền. Hãy coi context extract từ network là input
   không tin cậy và áp dụng policy tại trust boundary.
 </Callout>
+
+### Trace ID và span ID được sinh như thế nào
+
+Instrumentation yêu cầu `Tracer` bắt đầu một span. **Tracing SDK** phía sau
+`TracerProvider` mới là thành phần chọn hoặc sinh IDs. Collector và tracing
+backend thường chỉ nhận, lưu và lập chỉ mục các IDs đã có; chúng không sinh lại
+ID cho span do ứng dụng gửi tới. Propagator cũng không phải ID generator: nó chỉ
+serialize và deserialize context qua carrier.
+
+Quy tắc cốt lõi là:
+
+- trace mới sinh một trace ID mới;
+- mọi span, kể cả root và child, đều sinh một span ID mới;
+- child giữ trace ID của valid parent nhưng không dùng lại span ID của parent.
+
+#### Thứ tự SDK tạo một span
+
+Theo OpenTelemetry Tracing SDK specification, SDK phải hành xử theo thứ tự logic
+sau:
+
+1. Resolve parent context từ context được truyền rõ ràng hoặc active context.
+2. Nếu parent có valid trace ID, giữ trace ID đó. Nếu không, gọi `IdGenerator` để
+   sinh trace ID mới.
+3. Đưa trace ID vào `Sampler.ShouldSample(...)` cùng span name, kind, initial
+   attributes và initial links.
+4. Gọi `IdGenerator` để sinh **span ID mới**, độc lập với sampling decision.
+5. Tạo local SpanContext với trace ID, span ID, trace flags và tracestate đã được
+   quyết định.
+6. Tùy kết quả sampling, tạo recording span hoặc non-recording span.
+
+```mermaid
+flowchart TD
+  A["Instrumentation gọi start span"] --> B{"Có valid parent trace ID?"}
+  B -->|Có| C["Giữ trace ID của parent"]
+  B -->|Không| D["IdGenerator sinh trace ID mới"]
+  C --> E["Sampler nhận trace ID và quyết định"]
+  D --> E
+  E --> F["IdGenerator luôn sinh span ID mới"]
+  F --> G["Tạo local SpanContext"]
+  G --> H{"Sampling decision"}
+  H -->|Record| I["Recording span"]
+  H -->|Drop| J["Non-recording span có SpanContext"]
+```
+
+Trace ID phải có trước sampling vì sampler có thể dùng chính trace ID để đưa ra
+quyết định nhất quán. Span ID vẫn được sinh khi sampler trả `DROP`. Nhờ vậy,
+propagation, logging hoặc exception handling vẫn có một SpanContext hợp lệ để
+correlate, dù span không ghi attributes/events và không được export.
+
+<Callout type="info" title="Sampling không phải ID generation">
+  Sampling quyết định có record hoặc export span hay không. Nó không quyết định
+  span có được cấp ID hay không. Vì vậy, ứng dụng có thể đọc được valid trace ID
+  và span ID nhưng không tìm thấy span tương ứng trong tracing backend.
+</Callout>
+
+#### Root child và remote parent
+
+Ví dụ một request đi qua gateway rồi tới checkout service:
+
+```text
+Gateway tạo root span G1
+trace_id = T1  ← mới
+span_id  = G1  ← mới
+parent   = none
+
+Gateway tạo client span G2
+trace_id = T1  ← giữ từ G1
+span_id  = G2  ← mới
+parent   = G1
+
+Checkout extract G2 rồi tạo server span C1
+trace_id = T1  ← giữ từ remote parent G2
+span_id  = C1  ← mới
+parent   = G2
+```
+
+Nếu checkout không nhận được valid `traceparent`, SDK không có valid parent trace
+ID. Server span của checkout trở thành root mới, sinh `T2` và một span ID mới.
+Đây là cách lost propagation làm một request xuất hiện thành hai traces.
+
+Bảng quyết định ngắn:
+
+| Parent tại lúc tạo span | Trace ID của span mới | Span ID của span mới |
+| --- | --- | --- |
+| Không có parent | Sinh mới | Sinh mới |
+| Parent không hợp lệ | Sinh mới | Sinh mới |
+| Valid local parent | Giữ trace ID của parent | Sinh mới |
+| Valid remote parent | Giữ trace ID của parent | Sinh mới |
+| Tạo root có chủ đích dù đang có active span | Sinh mới | Sinh mới |
+
+Một server span ở Backend không nhất thiết sinh trace ID. Nếu Browser, API
+Gateway hoặc caller đã gửi valid context, Backend tiếp tục trace ID đó và chỉ
+sinh span ID cho operation của mình.
+
+#### IdGenerator và tính ngẫu nhiên
+
+`IdGenerator` thuộc cấu hình của `TracerProvider`. SDK mặc định phải sinh ngẫu
+nhiên cả trace ID và span ID. SDK cũng phải cung cấp cơ chế thay generator cho cả
+hai loại ID, dù API cấu hình cụ thể phụ thuộc ngôn ngữ.
+
+| Giá trị | Kích thước | Dạng hex chuẩn | Phạm vi nhận diện |
+| --- | --- | --- | --- |
+| Trace ID | 16 byte, 128 bit | 32 ký tự lowercase hex | Toàn bộ distributed trace |
+| Span ID | 8 byte, 64 bit | 16 ký tự lowercase hex | Một span trong trace |
+
+Ít nhất một byte phải khác `0`; ID toàn số `0` là invalid. SDK phải tránh trả ID
+invalid, thường bằng cách sinh lại nếu nguồn random tạo ra toàn zero.
+
+Random IDs không tạo bảo đảm toán học rằng collision là bất khả thi. Chúng làm
+xác suất hai ID trùng nhau đủ nhỏ khi generator có phân phối và entropy phù hợp.
+**Entropy** là lượng bất định trong giá trị được sinh. Generator kém, seed bị lặp
+sau restart hoặc counter chỉ unique trong một process có thể làm xác suất
+collision tăng mạnh.
+
+W3C Trace Context Level 2 còn định nghĩa `random` trace flag. Khi SDK sinh root
+trace ID đáp ứng yêu cầu randomness của W3C Level 2, SDK nên đặt flag này. Custom
+`IdGenerator` nên cho SDK biết IDs của nó có đáp ứng yêu cầu đó hay không. Đây là
+khả năng phụ thuộc phiên bản SDK; không tự bật flag chỉ vì nhìn ID có vẻ ngẫu
+nhiên.
+
+<Callout type="warn" title="Random không có nghĩa là secret">
+  Trace ID và span ID là correlation identifiers, không phải credential hoặc
+  access token. Không dùng độ khó đoán của ID để bảo vệ dữ liệu và không cấp
+  quyền chỉ vì caller biết một trace ID.
+</Callout>
+
+#### Khi nào mới dùng custom IdGenerator
+
+Custom generator chỉ nên dùng khi có contract tương thích cụ thể, chẳng hạn phải
+tham gia một tracing protocol có quy tắc ID riêng, hoặc khi test cần IDs xác định.
+Khi thay generator trong production, phải giữ các invariant:
+
+- đúng 16 byte cho trace ID và 8 byte cho span ID;
+- không sinh ID toàn zero;
+- xác suất collision phù hợp với lưu lượng và phạm vi triển khai;
+- thread-safe và không lặp sequence sau process restart hoặc fork;
+- không mã hóa PII, tenant ID, hostname hoặc business data vào ID;
+- khai báo randomness capability đúng nếu SDK hỗ trợ W3C random flag;
+- có concurrency, restart và statistical tests phù hợp.
+
+Không nên tự tạo trace/span ID trong business code bằng:
+
+- UUID string có dấu gạch nối rồi chép thẳng vào field;
+- timestamp hoặc timestamp cộng process ID;
+- counter chỉ tăng trong một instance;
+- hash của user ID, order ID, URL hoặc request body;
+- copy span ID của parent sang child;
+- tự nối hoặc parse `traceparent` thay cho propagator.
+
+Các cách này dễ sai format, giảm entropy, tạo collision hoặc làm lộ quan hệ với
+dữ liệu nghiệp vụ. Trong ứng dụng thông thường, hãy để default SDK `IdGenerator`
+sở hữu việc sinh ID.
 
 ### Local context và remote context
 
@@ -904,6 +1057,8 @@ tên và quan hệ đủ chính xác để trả lời câu hỏi vận hành v�
 | Span không xuất hiện | Quên `End`, non-recording span, sampling hoặc export failure | Kiểm tra `IsRecording`, sampled flag, shutdown và exporter logs |
 | Span có duration rất dài | End quá muộn hoặc quên end ở exception path | Bọc operation bằng `try/finally` hoặc context manager |
 | Child gắn sai parent | Tạo span nhưng không activate, hoặc async context bị mất | Log trace/span IDs tại boundary và test active context |
+| Child có cùng span ID với parent | Custom ID generator lỗi hoặc code tự tạo/copy ID | Dùng default SDK generator; test uniqueness và parent reference |
+| ID sai độ dài hoặc toàn số `0` | Custom generator, parser hoặc mapping sai | Validate 16-byte trace ID, 8-byte span ID và non-zero invariant |
 | Mỗi service tạo root mới | Không inject hoặc extract context | Capture carrier và so sánh `traceparent` tại từng hop |
 | Duplicate HTTP hoặc DB spans | Auto và manual instrumentation cùng ghi một boundary | So sánh name, kind, scope, timestamps rồi bỏ lớp trùng |
 | Kind luôn `INTERNAL` | Không truyền kind hoặc instrumentation sai boundary | Đối chiếu năm kinds và semantic convention của domain |
@@ -938,6 +1093,8 @@ dài trong production.
 - [ ] Span ID hợp lệ, có 16 ký tự hex và không toàn số `0`.
 - [ ] Root không có parent; mỗi non-root có parent context mong đợi.
 - [ ] Child giữ cùng trace ID với parent và có span ID mới.
+- [ ] Root sinh trace ID mới; mọi span đều có span ID mới, kể cả non-recording span.
+- [ ] Custom ID generator, nếu có, giữ đúng kích thước, non-zero, uniqueness và randomness contract.
 - [ ] Context extract từ remote boundary có `IsRemote = true` trước khi tạo child.
 - [ ] Span hiện tại sau khi tạo có local SpanContext.
 - [ ] Start và end timestamps bao phủ đúng operation; duration không âm.
@@ -973,6 +1130,7 @@ nhanh hơn việc chỉ sửa dashboard khi dữ liệu gốc đã sai.
 
 - [OpenTelemetry Specification — Tracing API](https://opentelemetry.io/docs/specs/otel/trace/api/)
 - [OpenTelemetry Specification — Tracing SDK](https://opentelemetry.io/docs/specs/otel/trace/sdk/)
+- [OpenTelemetry Specification — ID Generators](https://opentelemetry.io/docs/specs/otel/trace/sdk/#id-generators)
 - [OpenTelemetry Specification — Common concepts và attribute limits](https://opentelemetry.io/docs/specs/otel/common/)
 - [OpenTelemetry Docs — Traces và spans](https://opentelemetry.io/docs/concepts/signals/traces/)
 - [OpenTelemetry Semantic Conventions — Traces](https://opentelemetry.io/docs/specs/semconv/general/trace/)
