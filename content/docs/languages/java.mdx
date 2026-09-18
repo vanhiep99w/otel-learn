@@ -18,6 +18,11 @@ description: "Instrument một Spring Boot service bằng Java agent hoặc Java
   - [Chạy agent đúng thứ tự](#chạy-agent-đúng-thứ-tự)
   - [Cấu hình OTLP](#cấu-hình-otlp)
   - [Agent thấy gì](#agent-thấy-gì)
+- [Java agent tạo span và span ID như thế nào](#java-agent-tạo-span-và-span-id-như-thế-nào)
+  - [Agent nhận diện operation bằng instrumentation module](#agent-nhận-diện-operation-bằng-instrumentation-module)
+  - [Ví dụ Spring JDBC và HTTP client](#ví-dụ-spring-jdbc-và-http-client)
+  - [Quan hệ trace ID span ID và parent](#quan-hệ-trace-id-span-id-và-parent)
+  - [Khi agent không tạo span](#khi-agent-không-tạo-span)
 - [Cách 2 SDK và instrumentation thủ công](#cách-2-sdk-và-instrumentation-thủ-công)
   - [Dự án Spring Boot tối thiểu](#dự-án-spring-boot-tối-thiểu)
   - [Khởi tạo provider resource và exporter](#khởi-tạo-provider-resource-và-exporter)
@@ -171,6 +176,242 @@ try (Scope ignored = span.makeCurrent()) {
 Nó không phải nơi mặc định để đặt logic nghiệp vụ. Extension API có compatibility
 risk cao hơn API công khai; chỉ dùng khi cần customize agent, pin agent-extension
 pair và có test nâng cấp. Instrumentation trong application thường dễ sở hữu hơn.
+
+## Java agent tạo span và span ID như thế nào
+
+OpenTelemetry không đọc source code rồi tự suy luận rằng một dòng là SQL hoặc lời
+gọi service. Java agent biết operation nhờ các **instrumentation module** được
+viết riêng cho Servlet, Spring MVC, JDBC, HTTP clients, Kafka và các thư viện được
+hỗ trợ khác.
+
+Ranh giới trách nhiệm là:
+
+```text
+Instrumentation module phát hiện operation bắt đầu và kết thúc
+        ↓
+Tracer.startSpan() yêu cầu SDK tạo một span
+        ↓
+Active Context xác định parent
+        ↓
+SDK giữ hoặc sinh trace ID và luôn sinh span ID mới
+        ↓
+Instrumentation ghi name, kind, attributes, status rồi end span
+```
+
+`IdGenerator` trong SDK không biết SQL, HTTP hay Spring. Nó chỉ sinh ID khi
+instrumentation đã quyết định bắt đầu span. Ngược lại, instrumentation không tự
+chọn chuỗi ID; nó gọi OpenTelemetry API và để SDK sở hữu SpanContext.
+
+### Agent nhận diện operation bằng instrumentation module
+
+JVM nạp agent từ tùy chọn `-javaagent` trước application. Agent đăng cơ chế
+bytecode transformation với JVM. Khi một class được load, instrumentation module
+phù hợp kiểm tra class name, method signature và version/library compatibility,
+rồi chèn logic tương đương method entry/exit hooks.
+
+Ví dụ về các hook logic:
+
+| Operation trong application | Method hoặc boundary được instrument | Span thường tạo |
+| --- | --- | --- |
+| Request vào Spring MVC | Servlet container và Spring request handling | HTTP `SERVER` span |
+| `JdbcTemplate.update(...)` | JDBC `Statement` hoặc `PreparedStatement.execute*` phía dưới | Database `CLIENT` span |
+| `RestTemplate` hoặc `WebClient` call | Spring HTTP client và HTTP transport được hỗ trợ | HTTP `CLIENT` span |
+| Kafka publish/consume | Producer send và consumer receive/process boundary | `PRODUCER` hoặc `CONSUMER` span |
+| Redis command | Method của Lettuce hoặc Jedis được hỗ trợ | Database/client span |
+| Business method `validateFraud()` | Không có generic framework boundary | Không tự có span; cần manual instrumentation |
+
+Mental model của một method JDBC sau khi được instrument:
+
+```java
+// Pseudocode mô tả hành vi, không phải source thật của agent.
+Context parent = Context.current();
+Span span = tracer.spanBuilder("INSERT orders")
+    .setParent(parent)
+    .setSpanKind(SpanKind.CLIENT)
+    .startSpan();
+
+try (Scope ignored = span.makeCurrent()) {
+  return originalPreparedStatementExecuteUpdate();
+} catch (Throwable error) {
+  span.recordException(error);
+  span.setStatus(StatusCode.ERROR);
+  throw error;
+} finally {
+  span.end();
+}
+```
+
+Method thật không bị sửa trên source tree. Agent transform bytecode được JVM chạy.
+Module instrumentation còn áp dụng semantic conventions để đặt span name, kind và
+attributes. Chính sách thu SQL statement, table name hoặc parameters phụ thuộc
+instrumentation, version và cấu hình; không giả định agent sẽ hoặc nên ghi raw
+query parameters.
+
+Agent có thể hook nhiều lớp cho cùng một call, chẳng hạn `RestTemplate` và HTTP
+transport bên dưới. Instrumentation chính thức có cơ chế context/suppression để
+tránh tạo nested spans trùng lặp khi các lớp cùng biểu diễn một logical boundary.
+Dù vậy, phải kiểm tra payload thật vì tổ hợp agent, starter và interceptor custom
+vẫn có thể tạo duplicate spans.
+
+### Ví dụ Spring JDBC và HTTP client
+
+Order service sau nhận HTTP request, ghi database rồi gọi payment service:
+
+```java title="OrderController.java"
+@RestController
+final class OrderController {
+  private final JdbcTemplate jdbc;
+  private final RestTemplate http;
+
+  OrderController(JdbcTemplate jdbc, RestTemplate http) {
+    this.jdbc = jdbc;
+    this.http = http;
+  }
+
+  @PostMapping("/orders")
+  Map<String, String> createOrder() {
+    jdbc.update(
+        "INSERT INTO orders(status) VALUES (?)",
+        "PENDING");
+
+    http.postForEntity(
+        "http://payment-service/payments",
+        Map.of("amount", 100_000),
+        Void.class);
+
+    return Map.of("status", "created");
+  }
+}
+```
+
+Nếu order service và payment service đều chạy Java agent, trace minh họa có thể
+có dạng:
+
+```mermaid
+flowchart TD
+  S1["S1 SERVER<br/>POST /orders<br/>order-service"]
+  S2["S2 CLIENT<br/>INSERT orders<br/>JDBC"]
+  S3["S3 CLIENT<br/>POST payment-service"]
+  S4["S4 SERVER<br/>POST /payments<br/>payment-service"]
+  S5["S5 CLIENT<br/>INSERT payments<br/>JDBC"]
+
+  S1 --> S2
+  S1 --> S3
+  S3 --> S4
+  S4 --> S5
+```
+
+Tên và số lượng span cụ thể có thể thay đổi theo agent version, framework và
+semantic conventions. Invariant cần kiểm tra là quan hệ trace/parent, không phải
+snapshot mọi span name agent tạo ra.
+
+Quá trình xảy ra như sau:
+
+1. Servlet/Spring instrumentation nhận `POST /orders`, extract incoming context
+   nếu có và tạo server span `S1`.
+2. Agent làm `S1` active trong thời gian controller xử lý request.
+3. `JdbcTemplate` đi xuống JDBC `PreparedStatement.executeUpdate()`. JDBC
+   instrumentation thấy active `S1` và tạo client span `S2` làm child.
+4. HTTP client instrumentation chặn lời gọi `RestTemplate`, tạo client span `S3`
+   làm child của `S1`.
+5. Trước khi gửi request, instrumentation inject context của `S3` vào
+   `traceparent`.
+6. Payment service extract header rồi tạo server span `S4` với `S3` làm remote
+   parent.
+7. JDBC instrumentation ở payment service tạo `S5` làm child của `S4`.
+8. Mỗi hook end span ở success/error boundary tương ứng; SDK/processor export các
+   recording spans bất đồng bộ.
+
+JDBC span thường mô tả **lời gọi từ Java process tới database**. Nó không mặc
+nhiên inject W3C `traceparent` vào database protocol và không có nghĩa database
+engine đã tạo một server span tương ứng. Muốn quan sát internals của database cần
+telemetry phía database hoặc integration riêng mà backend hỗ trợ.
+
+### Quan hệ trace ID span ID và parent
+
+Giả sử request tới order service chưa có valid `traceparent`. Khi Java agent yêu
+cầu SDK tạo `S1`, SDK tạo trace ID `T1` và span ID mới cho `S1`. Những operation
+sau giữ `T1` nhưng luôn có span ID riêng:
+
+```text
+S1  POST /orders
+trace_id       = T1
+span_id        = 1111111111111111
+parent_span_id = none
+
+S2  INSERT orders
+trace_id       = T1
+span_id        = 2222222222222222
+parent_span_id = 1111111111111111
+
+S3  POST payment-service
+trace_id       = T1
+span_id        = 3333333333333333
+parent_span_id = 1111111111111111
+```
+
+Order service inject context của client span `S3`:
+
+```http
+traceparent: 00-4bf92f3577b34da6a3ce929d0e0e4736-3333333333333333-01
+```
+
+Payment service giữ trace ID nhưng sinh server span ID mới:
+
+```text
+S4  POST /payments
+trace_id       = T1
+span_id        = 4444444444444444
+parent_span_id = 3333333333333333
+```
+
+Quy tắc SDK:
+
+| Context lúc instrumentation gọi `startSpan()` | Trace ID | Span ID |
+| --- | --- | --- |
+| Không có valid parent | Sinh trace ID mới | Sinh span ID mới |
+| Có active local parent | Giữ trace ID của parent | Sinh span ID mới |
+| Có remote parent đã extract | Giữ trace ID của parent | Sinh span ID mới |
+| Sampling trả `DROP` | Vẫn resolve trace ID | Vẫn sinh span ID cho non-recording SpanContext |
+
+Do đó, Java agent không “gán trước” một span ID cố định cho JDBC hoặc HTTP.
+Mỗi lần operation thực sự chạy, instrumentation gọi `startSpan()` và SDK sinh
+span ID cho instance đó. Hai lần chạy cùng câu SQL tạo hai span IDs khác nhau.
+
+<Callout type="idea" title="Cách nhớ">
+  Instrumentation quyết định **khi nào** tạo span. Active `Context` quyết định
+  **parent là ai**. SDK `IdGenerator` quyết định **ID mới là gì**. Propagator giữ
+  trace liền mạch khi operation đi qua process hoặc network boundary.
+</Callout>
+
+### Khi agent không tạo span
+
+Không phải mọi method Java đều có span. Agent chỉ tạo span khi có instrumentation
+module hỗ trợ và module đó đang bật, tương thích với library version, đồng thời
+operation thỏa điều kiện của instrumentation.
+
+Ví dụ sau không tự có business span chỉ vì method name mô tả nghiệp vụ:
+
+```java
+fraudService.validateOrder(order);
+calculateTotal(order);
+mapRequestToEntity(request);
+```
+
+Nếu `validateOrder` cần được quan sát riêng, tạo manual child span bằng
+OpenTelemetry API như phần tiếp theo. Không bọc lại JDBC hoặc HTTP boundary đã
+được agent instrument; làm vậy thường tạo duplicate spans.
+
+Khi thiếu span mong đợi, kiểm tra theo thứ tự:
+
+1. agent có thực sự được nạp trước application không;
+2. library và version có nằm trong supported libraries của agent đang chạy không;
+3. instrumentation module có bị disable bằng config không;
+4. method có đi qua đúng boundary mà module hook không;
+5. active Context có bị mất qua executor, callback hoặc reactive boundary không;
+6. span có bị sampling/drop hoặc export failure không;
+7. starter, agent hoặc interceptor custom có suppress/duplicate instrumentation
+   hay không.
 
 ## Cách 2 SDK và instrumentation thủ công
 
